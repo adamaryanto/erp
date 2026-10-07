@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR Test - Simulasi Timbangan Ayam Hidup</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; color: #00FF88; font-family: 'Courier New', monospace;
+         height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .display { text-align: center; }
+  .angka { font-size: 13vw; font-weight: bold; letter-spacing: 0.08em;
+           text-shadow: 0 0 12px rgba(0,255,136,.6); }
+  .satuan { font-size: 6vw; color: #00cc6a; }
+  .fase { position: fixed; top: 14px; width: 100%; text-align: center;
+          font-size: 20px; font-family: sans-serif; font-weight: bold; }
+  .fase.naik { color: #ffaa00; }
+  .fase.stabil { color: #00FF88; }
+  .fase.turun { color: #ff5555; }
+  .fase.kosong { color: #557755; }
+  .hint { position: fixed; bottom: 12px; width: 100%; text-align: center;
+          color: #335; font-size: 14px; font-family: sans-serif; }
+  .ctl { position: fixed; bottom: 44px; width: 100%; text-align: center; }
+  .ctl button { font-family: sans-serif; font-size: 22px; font-weight: bold;
+    padding: 12px 34px; margin: 0 8px; border: none; border-radius: 10px; cursor: pointer; }
+  #btnStart { background: #00c853; color: #fff; }
+  #btnStop { background: #d32f2f; color: #fff; }
+  #btnStart:disabled { background: #335544; cursor: default; }
+  #btnStop:disabled { background: #552222; cursor: default; }
+</style>
+</head>
+<body>
+  <div class="fase kosong" id="fase">KOSONG — siap keranjang</div>
+  <div class="display">
+    <div class="angka" id="angka">0.00</div>
+    <div class="satuan">kg</div>
+  </div>
+  <p class="hint">[sim v13] <span id="dbg">tick#0</span> • FULL MANUAL: START = naik+tahan • STOP = turun ke 0, diem sampai START lagi</p>
+  <div class="ctl">
+    <button id="btnStart" onclick="mulai()">▶ START</button>
+    <button id="btnStop" onclick="berhenti()">■ STOP</button>
+  </div>
+  <script>
+    const el = document.getElementById('angka');
+    const faseEl = document.getElementById('fase');
+    const D = { naik: 1200, stabil: 5000, turun: 800, kosong: 1200 };
+    let target = 20 + Math.random() * 8;
+    let fase = 'kosong', t0 = Date.now(), tEnd = 0, from = 0, lastV = 0;
+    let jalan = true;
+
+    function setFase(f) {
+      if (f === 'naik') { target = 20 + Math.random() * 8; from = 0; }
+      if (f === 'turun') { from = target; }
+      fase = f;
+      t0 = Date.now();
+      tEnd = t0 + (D[f] || 1500);
+      const label = {
+        naik: 'NAIK — keranjang ditaruh',
+        stabil: 'STABIL — silakan baca',
+        turun: 'TURUN — keranjang diangkat',
+        kosong: 'KOSONG — siap keranjang'
+      }[f];
+      faseEl.textContent = label;
+      faseEl.className = 'fase ' + f;
+    }
+    function mulai() {
+      jalan = true;
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = false;
+      // Langsung NAIK (target acak 20-28), tanpa mampir KOSONG.
+      setFase('naik');
+    }
+    function berhenti() {
+      // STOP = nurunin keranjang: angka jalan ke 0 (±1 dtk), baru beku.
+      from = lastV;
+      fase = 'turunkan';
+      t0 = Date.now();
+      tEnd = t0 + 1000;
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnStop').disabled = true;
+      faseEl.textContent = 'TURUN — nurunin keranjang';
+      faseEl.className = 'fase turun';
+    }
+    function tick() {
+      if (!jalan) return;
+      window.__tickN = (window.__tickN || 0) + 1;
+      // FULL MANUAL: satu-satunya transisi otomatis = NAIK sampai STABIL.
+      if (fase === 'naik' && Date.now() >= tEnd) setFase('stabil');
+      if (fase === 'turunkan' && Date.now() >= tEnd) {
+        jalan = false;
+        faseEl.textContent = 'BERHENTI — angka dibekukan';
+        faseEl.className = 'fase kosong';
+      }
+      const el1 = Date.now() - t0;
+      let v;
+      if (fase === 'naik') {
+        const p = Math.min(1, el1 / D.naik);
+        v = from + (target - from) * p + (Math.random() - 0.5) * 1.2;
+      } else if (fase === 'stabil') {
+        v = target + (Math.random() - 0.5) * 0.04;
+      } else if (fase === 'turun') {
+        const p = Math.min(1, el1 / D.turun);
+        v = from * (1 - p);
+      } else if (fase === 'turunkan') {
+        const p = Math.min(1, el1 / 1000);
+        v = from * (1 - p);
+      } else {
+        v = 0;
+      }
+      el.textContent = Math.max(0, v).toFixed(2);
+      lastV = Math.max(0, v);
+      window.__lastV = lastV;
+      var dbg = document.getElementById('dbg');
+      if (dbg) dbg.textContent = 'tick#' + window.__tickN + ' fase=' + fase + ' jalan=' + jalan + ' v=' + lastV.toFixed(2);
+    }
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'F5') return;
+      // Selama TURUN abaikan tombol biar angka nggak mental naik lagi.
+      if (jalan && fase !== 'turunkan') {
+        setFase('naik');
+        document.getElementById('btnStart').disabled = true;
+        document.getElementById('btnStop').disabled = false;
+      }
+    });
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+    setInterval(tick, 150);
+  </script>
+</body>
+</html>
