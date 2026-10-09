@@ -39,7 +39,7 @@ class SettingsController extends Controller
             'auto_mode_enabled' => 'boolean',
             'auto_trigger_kg' => 'required|numeric|min:5|max:20',
             'auto_empty_kg' => 'required|numeric|min:0.5|max:5',
-            'auto_duration_sec' => 'required|integer|min:1|max:60',
+            'auto_duration_sec' => 'required|numeric|min:0.5|max:60',
             'beep_enabled' => 'boolean',
             'printer_name' => 'nullable|string|max:255',
             'receipt_paper' => 'required|string|in:58mm,80mm',
@@ -50,6 +50,7 @@ class SettingsController extends Controller
             'company_logo' => 'nullable|image|mimes:png,jpg,jpeg|max:2048',
             'cam_snapshot_url' => 'nullable|string|max:500',
             'cam_stream_url' => 'nullable|string|max:500',
+            'cam_rotate' => 'nullable|integer|in:0,90,180,270',
             'ocr_min_conf' => 'nullable|numeric|min:0|max:1',
         ]);
 

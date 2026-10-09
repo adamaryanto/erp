@@ -41,4 +41,29 @@ class HistoryController extends Controller
 
         return redirect()->route('history.index')->with('success', 'Penimbangan dihapus');
     }
+
+    /**
+     * Hapus banyak sekaligus (checkbox di halaman history).
+     * Link cam (mesin_weighing_id) nullOnDelete — aman, tidak ikut terhapus.
+     */
+    public function destroyBulk(Request $request): RedirectResponse
+    {
+        if (auth()->check() && ! auth()->user()->isAdmin()) {
+            abort(403);
+        }
+
+        $ids = $request->input('ids', []);
+        if (! is_array($ids)) {
+            $ids = [$ids];
+        }
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+
+        if ($ids === []) {
+            return redirect()->route('history.index')->with('success', 'Tidak ada data dipilih');
+        }
+
+        $count = Weighing::whereIn('id', $ids)->delete();
+
+        return redirect()->route('history.index')->with('success', $count.' penimbangan dihapus');
+    }
 }

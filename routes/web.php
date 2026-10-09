@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\DeliveryOrderController;
 use App\Http\Controllers\DeliverySessionController;
 use App\Http\Controllers\DiagnoseController;
 use App\Http\Controllers\HistoryController;
@@ -31,6 +32,8 @@ Route::get('/dashboard', function () {
 })->name('dashboard');
 
 Route::get('/history', [HistoryController::class, 'index'])->name('history.index');
+// Bulk HARUS di atas {weighing} biar "bulk" tidak diikat sebagai ID.
+Route::delete('/history/bulk', [HistoryController::class, 'destroyBulk'])->name('history.bulk');
 Route::delete('/history/{weighing}', [HistoryController::class, 'destroy'])->name('history.destroy');
 
 Route::get('/summary', [SummaryController::class, 'index'])->name('summary.index');
@@ -39,6 +42,11 @@ Route::get('/summary/excel', [SummaryController::class, 'excel'])->name('summary
 Route::get('/summary/pdf', [SummaryController::class, 'pdf'])->name('summary.pdf');
 
 Route::get('/master', [MasterController::class, 'index'])->name('master.index');
+
+Route::get('/data-do', [DeliveryOrderController::class, 'index'])->name('do.index');
+Route::post('/data-do', [DeliveryOrderController::class, 'store'])->name('do.store');
+Route::post('/data-do/{order}/toggle', [DeliveryOrderController::class, 'toggle'])->name('do.toggle');
+Route::delete('/data-do/{order}', [DeliveryOrderController::class, 'destroy'])->name('do.destroy');
 
 Route::get('/rekap-mobil', [DeliverySessionController::class, 'index'])->name('delivery.index');
 Route::post('/rekap-mobil', [DeliverySessionController::class, 'store'])->name('delivery.store');

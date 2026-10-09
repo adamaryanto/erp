@@ -163,6 +163,7 @@ class CamReadingController extends Controller
             '--station', $station,
             '--api-base', config('app.url'),
             '--roi', $roi,
+            '--rotate', (string) ($settings->cam_rotate ?? 0),
             '--once',
             // --fast (recognizer saja, 2-4 dtk): --once full-detect bisa
             // 10-60 dtk CPU dan memblokir php artisan serve (single-thread)
@@ -355,6 +356,7 @@ class CamReadingController extends Controller
                 '--station', $station,
                 '--api-base', (string) config('app.url'),
                 '--roi', $roi,
+                '--rotate', (string) ($settings->cam_rotate ?? 0),
                 '--interval', $interval,
                 '--min-conf', (string) ($settings->ocr_min_conf ?? 0.4),
                 '--fast', '--no-save', '--quiet',
@@ -480,6 +482,7 @@ class CamReadingController extends Controller
             base_path('bridge/cam_ocr.py'),
             '--snapshot-url', $snapshotUrl,
             '--station', $station,
+            '--rotate', (string) ($settings->cam_rotate ?? 0),
             '--auto-roi',
         ], null, [
             'SYSTEMROOT' => 'C:\Windows',
@@ -521,6 +524,125 @@ class CamReadingController extends Controller
             'station' => $station,
             'roi' => $roi,
             'text' => $text,
+            'log' => $tail,
+        ]);
+    }
+
+    /**
+     * KALIBRASI FULL-MANDIRI 1 klik: STOP service (biar RAM lega) → coba
+     * putar 0/90/180/270 → arah terbaik menang → SIMPAN ROI + Putar ke
+     * Pengaturan → START lagi bila sebelumnya jalan. Operator tinggal
+     * geser kamera terus klik 1 tombol.
+     */
+    public function autoCalibrate(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'station' => 'nullable|string|max:20',
+        ]);
+
+        $settings = Setting::config();
+        $snapshotUrl = trim((string) $settings->cam_snapshot_url);
+
+        if ($snapshotUrl === '') {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Snapshot URL belum diisi di Pengaturan.',
+            ], 422);
+        }
+
+        $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
+
+        // Ingat kondisi sebelum kalibrasi biar dikembalikan seperti semula.
+        $wasRunning = $this->heartbeatAlive($station);
+        $prevInfo = Cache::get($this->serviceKey($station), []);
+        $prevInterval = (float) ($prevInfo['interval'] ?? 0.2);
+
+        if ($wasRunning) {
+            $this->stopService(new Request(['station' => $station]));
+            sleep(2); // kasih napas: proses lama mati + RAM kelepas
+        }
+
+        $candidates = [
+            'C:\laragon\bin\python\python-3.10\python.exe',
+            'python',
+        ];
+        $python = null;
+        foreach ($candidates as $c) {
+            if ($c === 'python' || is_file($c)) {
+                $python = $c;
+                break;
+            }
+        }
+
+        $process = new Process([
+            $python,
+            base_path('bridge/cam_ocr.py'),
+            '--snapshot-url', $snapshotUrl,
+            '--station', $station,
+            '--auto-roi',
+            '--try-rotate',
+        ], null, [
+            'SYSTEMROOT' => 'C:\Windows',
+            'PYTHONHASHSEED' => '0',
+            'PYTHONWARNINGS' => 'ignore',
+            'PYTHONIOENCODING' => 'utf-8',
+            'PATH' => (string) getenv('PATH'),
+            'TEMP' => (string) (getenv('TEMP') ?: sys_get_temp_dir()),
+            'USERPROFILE' => (string) (getenv('USERPROFILE') ?: ''),
+        ]);
+        // 4 arah × (load model sekali + infer): bisa 2-4 menit.
+        $process->setTimeout(420);
+        set_time_limit(450);
+        $process->run();
+
+        $output = trim($process->getOutput()."\n".$process->getErrorOutput());
+        $roi = null;
+        $text = null;
+        $rotate = null;
+        if (preg_match('/^ROI:\s*([0-9.,]+)/mi', $output, $m)) {
+            $roi = trim($m[1]);
+        }
+        if (preg_match('/^TEXT:\s*(.+)$/mi', $output, $m)) {
+            $text = trim($m[1]);
+        }
+        if (preg_match('/^ROTATE:\s*(\d+)/mi', $output, $m)) {
+            $rotate = (int) $m[1];
+        }
+
+        $lines = array_values(array_filter(explode("\n", $output)));
+        $tail = implode("\n", array_slice($lines, -8));
+
+        if (! $process->isSuccessful() || $roi === null || $rotate === null) {
+            // Gagal: kembalikan service seperti semula biar tidak mati suri.
+            if ($wasRunning) {
+                $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Deteksi gagal di semua arah. Pastikan kamera menghadap display berisi angka.',
+                'station' => $station,
+                'log' => $tail,
+            ], 500);
+        }
+
+        // Menang → simpan Putar + ROI ke Pengaturan.
+        $settings->update(['cam_rotate' => $rotate, 'cam_roi' => $roi]);
+
+        $restarted = false;
+        if ($wasRunning) {
+            $resp = $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
+            $restarted = ($resp->getData(true)['status'] ?? '') !== 'error';
+        }
+
+        return response()->json([
+            'status' => 'done',
+            'station' => $station,
+            'roi' => $roi,
+            'rotate' => $rotate,
+            'text' => $text,
+            'was_running' => $wasRunning,
+            'restarted' => $restarted,
             'log' => $tail,
         ]);
     }

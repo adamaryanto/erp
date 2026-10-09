@@ -87,8 +87,8 @@
     <!-- PREVIEW SINGLE: Video URL (live) diutamakan, fallback ke Snapshot URL -->
     @if($settings->cam_stream_url ?? $settings->cam_snapshot_url)
         <div x-data="camPreview()" x-init="init()" data-url="{{ ($settings->cam_stream_url ?? '') !== '' ? $settings->cam_stream_url : $settings->cam_snapshot_url }}">
-            <div class="relative bg-slate-900">
-                <img x-show="!failed" :src="src" x-on:load="onLoad()" x-on:error="onError()" alt="Kamera pos timbang" class="w-full max-h-64 object-cover">
+            <div class="relative bg-slate-900 h-[420px] flex items-center justify-center overflow-hidden">
+                <img x-show="!failed" :src="src" x-on:load="onLoad()" x-on:error="onError()" alt="Kamera pos timbang" class="max-w-full max-h-full object-contain">
                 <div x-show="!failed && !loaded" class="p-6 text-center text-sm text-slate-300">
                     <p class="animate-pulse">Menghubungi kamera…</p>
                     <p class="text-[11px] text-slate-500 mt-1 font-mono break-all" x-text="base"></p>
@@ -221,6 +221,9 @@
                     <button @click="autoRoi()" :disabled="roiAutoBusy"
                             class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded transition"
                             x-text="roiAutoBusy ? 'MENDETEKSI… (±20 dtk)' : '🤖 AUTO ROI'"></button>
+                    <button @click="autoCalibrate()" :disabled="roiCalBusy"
+                            class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold rounded transition"
+                            x-text="roiCalBusy ? 'KALIBRASI… (±4 mnt)' : '⚡ FULL AUTO (putar+ROI+restart)'"></button>
                     <button @click="testRoiOcr()" :disabled="roiTestBusy"
                             class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded transition"
                             x-text="roiTestBusy ? 'TESTING…' : 'TEST OCR DENGAN ROI INI'"></button>

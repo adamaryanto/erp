@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class DeliverySession extends Model
 {
-    protected $fillable = ['supplier_id', 'basket_id', 'jenis_ayam', 'basket_deduction_manual', 'vehicle_no', 'driver_name', 'delivered_at', 'do_weight', 'total_ekor', 'dead_count', 'dead_kg', 'wet_kg', 'wet_count', 'note'];
+    protected $fillable = ['supplier_id', 'do_id', 'basket_id', 'jenis_ayam', 'basket_deduction_manual', 'vehicle_no', 'driver_name', 'delivered_at', 'do_weight', 'total_ekor', 'dead_count', 'dead_kg', 'wet_kg', 'wet_count', 'note'];
     protected function casts(): array
     {
         return [
@@ -20,23 +20,37 @@ class DeliverySession extends Model
         return $this->belongsTo(Supplier::class);
     }
 
+    public function deliveryOrder(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryOrder::class, 'do_id');
+    }
+
     public function basket(): BelongsTo
     {
         return $this->belongsTo(Basket::class);
     }
 
     /**
-     * Timbangan yang cocok: supplier + mobil + tanggal sama.
+     * Timbangan yang cocok: (supplier + mobil + tanggal sama) ATAU do_id
+     * yang sama (timbang-cam sekarang nyimpan DO langsung).
      * Plat dinormalisasi (kapital, tanpa spasi) agar "B 9482 FJA"
      * tetap nyambung dengan "B9482FJA".
      */
     public function matchedWeighings()
     {
         $plate = preg_replace('/\s+/', '', strtoupper($this->vehicle_no ?? ''));
+        $doId = $this->do_id;
 
-        return Weighing::where('supplier_id', $this->supplier_id)
-            ->whereDate('weighed_at', $this->delivered_at)
-            ->whereRaw("REPLACE(UPPER(vehicle_no), ' ', '') = ?", [$plate]);
+        return Weighing::where(function ($q) use ($plate, $doId) {
+            $q->where(function ($qq) use ($plate) {
+                $qq->where('supplier_id', $this->supplier_id)
+                    ->whereDate('weighed_at', $this->delivered_at)
+                    ->whereRaw("REPLACE(UPPER(vehicle_no), ' ', '') = ?", [$plate]);
+            });
+            if ($doId) {
+                $q->orWhere('do_id', $doId);
+            }
+        });
     }
 
     /**

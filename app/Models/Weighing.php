@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Weighing extends Model
 {
-    protected $fillable = ['supplier_id', 'basket_id', 'scale_station_id', 'source', 'operator_id', 'vehicle_no', 'weighed_at', 'gross_avg', 'tare_kg', 'net_kg', 'min_kg', 'max_kg', 'stddev', 'raw_samples', 'is_manual_tare', 'note'];
+    protected $fillable = ['supplier_id', 'do_id', 'basket_id', 'scale_station_id', 'source', 'operator_id', 'vehicle_no', 'weighed_at', 'gross_avg', 'tare_kg', 'net_kg', 'min_kg', 'max_kg', 'stddev', 'raw_samples', 'is_manual_tare', 'note'];
     protected function casts(): array
     {
         return [
@@ -23,6 +23,14 @@ class Weighing extends Model
     public function supplier(): BelongsTo
     {
         return $this->belongsTo(Supplier::class);
+    }
+
+    /**
+     * DO yang dipilih saat nimbang (supplier diisi server dari DO ini).
+     */
+    public function deliveryOrder(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryOrder::class, 'do_id');
     }
 
     /**

@@ -3,20 +3,33 @@
 @section('title', 'Riwayat Penimbangan')
 
 @section('content')
+    @php($canDelete = !auth()->check() || auth()->user()->isAdmin())
     <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
             <h1 class="text-3xl font-bold text-gray-900">Riwayat Penimbangan</h1>
             <p class="text-gray-600 mt-2">Data penimbangan hari ini</p>
         </div>
-        <form method="GET" action="{{ route('history.index') }}" class="flex items-center gap-2">
-            <label class="text-xs font-semibold text-gray-600">POS</label>
-            <select name="station" onchange="this.form.submit()" class="h-10 px-3 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-blue-500">
-                <option value="">Semua pos</option>
-                @foreach($stations as $st)
-                    <option value="{{ $st->code }}" @selected($stationFilter === $st->code)>{{ $st->code }}</option>
-                @endforeach
-            </select>
-        </form>
+        <div class="flex items-center gap-2">
+            @if($canDelete)
+                <form id="bulkForm" method="POST" action="{{ route('history.bulk') }}" onsubmit="return confirmBulkDelete()">
+                    @csrf
+                    @method('DELETE')
+                    <div id="bulkIds"></div>
+                    <button type="submit" id="bulkBtn" disabled class="h-10 px-4 rounded-md text-sm font-bold bg-slate-200 text-slate-600 cursor-not-allowed">
+                        HAPUS TERPILIH (<span id="selCount">0</span>)
+                    </button>
+                </form>
+            @endif
+            <form method="GET" action="{{ route('history.index') }}" class="flex items-center gap-2">
+                <label class="text-xs font-semibold text-gray-600">POS</label>
+                <select name="station" onchange="this.form.submit()" class="h-10 px-3 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-blue-500">
+                    <option value="">Semua pos</option>
+                    @foreach($stations as $st)
+                        <option value="{{ $st->code }}" @selected($stationFilter === $st->code)>{{ $st->code }}</option>
+                    @endforeach
+                </select>
+            </form>
+        </div>
     </div>
 
     <div class="bg-white rounded-lg shadow overflow-hidden">
@@ -24,6 +37,9 @@
             <table class="w-full divide-y divide-gray-200">
                 <thead class="bg-gray-50">
                     <tr>
+                        @if($canDelete)
+                            <th class="px-4 py-3 text-left"><input type="checkbox" id="checkAll" title="Pilih semua di halaman ini" class="w-4 h-4 rounded"></th>
+                        @endif
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">No</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pos</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Jam</th>
@@ -39,6 +55,9 @@
                 <tbody class="bg-white divide-y divide-gray-200">
                     @forelse($weighings as $w)
                         <tr class="hover:bg-gray-50">
+                            @if($canDelete)
+                                <td class="px-4 py-4 whitespace-nowrap"><input type="checkbox" class="row-check w-4 h-4 rounded" value="{{ $w->id }}"></td>
+                            @endif
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ $w->id }}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm font-mono font-bold text-gray-700">{{ $w->station->code ?? '—' }}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ $w->weighed_at->format('H:i:s') }}</td>
@@ -71,7 +90,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="10" class="px-6 py-4 text-center text-gray-500">Belum ada data penimbangan hari ini</td>
+                            <td colspan="{{ $canDelete ? 11 : 10 }}" class="px-6 py-4 text-center text-gray-500">Belum ada data penimbangan hari ini</td>
                         </tr>
                     @endforelse
                 </tbody>
@@ -89,6 +108,52 @@
         function printReceipt(id) {
             // Placeholder for receipt printing logic
             alert('Fitur cetak struk akan diimplementasikan di fase berikutnya');
+        }
+
+        const checkAll = document.getElementById('checkAll');
+        const bulkBtn = document.getElementById('bulkBtn');
+        const selCount = document.getElementById('selCount');
+
+        function selectedIds() {
+            return [...document.querySelectorAll('.row-check:checked')].map(c => c.value);
+        }
+
+        function refreshBulk() {
+            if (!bulkBtn) return;
+            const n = selectedIds().length;
+            selCount.textContent = n;
+            bulkBtn.disabled = n === 0;
+            bulkBtn.className = n === 0
+                ? 'h-10 px-4 rounded-md text-sm font-bold bg-slate-200 text-slate-600 cursor-not-allowed'
+                : 'h-10 px-4 rounded-md text-sm font-bold bg-red-600 hover:bg-red-700 text-white shadow-sm';
+            if (checkAll) {
+                const all = document.querySelectorAll('.row-check');
+                checkAll.checked = all.length > 0 && n === all.length;
+            }
+        }
+
+        if (checkAll) {
+            checkAll.addEventListener('change', () => {
+                document.querySelectorAll('.row-check').forEach(c => { c.checked = checkAll.checked; });
+                refreshBulk();
+            });
+        }
+        document.querySelectorAll('.row-check').forEach(c => c.addEventListener('change', refreshBulk));
+
+        function confirmBulkDelete() {
+            const ids = selectedIds();
+            if (ids.length === 0) return false;
+            if (!confirm(`Yakin hapus ${ids.length} data terpilih?`)) return false;
+            const holder = document.getElementById('bulkIds');
+            holder.innerHTML = '';
+            ids.forEach(id => {
+                const inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = 'ids[]';
+                inp.value = id;
+                holder.appendChild(inp);
+            });
+            return true;
         }
     </script>
 @endsection

@@ -25,7 +25,6 @@
             </div>
             <div class="flex items-center gap-3">
                 <h1 class="text-xl font-semibold text-slate-900 font-mono tracking-tight">{{ $session->vehicle_no }}</h1>
-                <span class="px-2.5 py-0.5 rounded text-xs font-semibold bg-blue-50 text-[#1976D2] border border-blue-200 uppercase">{{ $session->supplier->name }}</span>
             </div>
             <p class="text-xs text-slate-500 mt-0.5">Tanggal Kedatangan: <strong class="text-slate-700 font-mono font-semibold">{{ $session->delivered_at->format('d/m/Y') }}</strong> • Total Ekor: <strong class="text-slate-700 font-mono font-semibold">{{ $session->total_ekor }} ekor</strong></p>
         </div>
@@ -118,7 +117,13 @@
             <form action="{{ route('delivery.update', $session) }}" method="POST" class="p-5 space-y-3.5">
                 @csrf
                 @method('PUT')
-                
+
+                <div>
+                    <label class="block text-xs font-normal text-slate-600 mb-1">Nomor Mobil / Plat <span class="text-[10px] text-amber-600">kunci link ke timbangan</span></label>
+                    <input type="text" name="vehicle_no" required maxlength="20" value="{{ $session->vehicle_no }}" placeholder="cth: B 9482 FJA" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono font-bold uppercase focus:ring-2 focus:ring-[#1976D2]">
+                    <p class="text-[10px] text-slate-500 mt-1">Harus sama dengan plat yang diisi di halaman timbang, kalau beda rekap kosong.</p>
+                </div>
+
                 <div>
                     <label class="block text-xs font-normal text-slate-600 mb-1">Tipe Keranjang (Tare Default)</label>
                     <select name="basket_id" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm text-slate-800 focus:ring-2 focus:ring-[#1976D2]">
@@ -212,18 +217,24 @@
             <div class="text-center border-b-2 border-slate-900 pb-3 mb-4 space-y-0.5">
                 <h2 class="font-semibold text-lg tracking-wider text-slate-900">{{ $settings->company_name ?? 'PT RUMAH POTONG AYAM (RPA) BAROKAH JAYA' }}</h2>
                 <h3 class="font-semibold text-sm tracking-wide uppercase text-slate-700">FORM PENGIRIMAN AYAM HIDUP (DHK)</h3>
-                <p class="text-[11px] text-slate-500 font-mono">{{ $settings->company_address ?? 'Jl. Industri Raya No. 88, Cikarang' }} • Accurate ERP System</p>
+                <p class="text-[11px] text-slate-500 font-mono">{{ $settings->company_address ?? 'Jl. Industri Raya No. 88, Cikarang' }} • DHK ERP SYSTEM</p>
             </div>
 
-            <!-- HEADER INFO GRID -->
-            <div class="grid grid-cols-2 gap-x-8 gap-y-1 text-xs font-mono mb-4 bg-slate-50 p-3 rounded border border-slate-200">
-                <div>TANGGAL PROD : <strong class="text-slate-900 font-semibold">{{ $session->delivered_at->format('d/m/Y') }}</strong></div>
-                <div>NAMA PENGIRIM : <strong class="text-slate-900 font-semibold">{{ $session->supplier->name }}</strong></div>
-                <div>NO. MOBIL    : <strong class="text-slate-900 font-semibold">{{ $session->vehicle_no }}</strong></div>
-                <div>TOTAL EKOR   : <strong class="text-slate-900 font-semibold">{{ $session->total_ekor }} ekor</strong></div>
-                <div>TIMBANG NETTO: <strong class="text-emerald-700 font-semibold">{{ $session->hasData() ? number_format($session->netTotal(), 2) . ' kg' : '—' }}</strong></div>
-                <div>RATA-RATA    : <strong class="text-slate-900 font-semibold">{{ number_format($session->avgBird(), 2) }} kg/ekor</strong></div>
-                <div>KG AYAM      : <strong class="text-slate-900 font-semibold">{{ number_format($session->do_weight, 2) }} ÷ {{ $session->total_ekor }}</strong></div>
+            <!-- HEADER INFO GRID: kiri = No DO + Do asal + Tgl + mobil, kanan = Rata2 -->
+            <div class="grid grid-cols-[1fr_1.5fr] gap-x-8 gap-y-1 text-xs font-mono mb-4 bg-slate-50 p-3 rounded border border-slate-200">
+                <div class="space-y-1">
+                    <div>No DO/Faktur : <strong class="text-slate-900 font-semibold">{{ $session->deliveryOrder->number ?? '—' }}</strong></div>
+                    <div>Do asal :</div>
+                    <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 pl-4">
+                        <span>Kg ayam</span><strong class="text-slate-900 font-semibold">: {{ number_format($session->do_weight, 2, ',', '.') }} Kg</strong>
+                        <span>total ekor</span><strong class="text-slate-900 font-semibold">: {{ number_format($session->total_ekor, 0, ',', '.') }} ekor</strong>
+                    </div>
+                </div>
+                <div class="space-y-1 border-l border-slate-200 pl-3">
+                    <div>Tgl Prod : <strong class="text-slate-900 font-semibold">{{ $session->delivered_at->format('d/m/Y') }}</strong></div>
+                    <div>No mobil / Nama supir : <strong class="text-slate-900 font-semibold">{{ $session->vehicle_no }} / {{ $session->driver_name ?: '—' }}</strong></div>
+                    <div class="pt-1">Rata2 berat ayam setelah timbang : <strong class="text-slate-900 font-semibold whitespace-nowrap">{{ number_format($session->avgBird(), 2, ',', '.') }} Kg/ekor</strong></div>
+                </div>
             </div>
 
             <!-- WEIGHINGS MATRIX TABLE (selalu 6 pasang No/Kg, kolom kosong di-padding) -->
@@ -278,14 +289,6 @@
                 <div>PERSENTASE SUSUT: <strong class="{{ $session->hasData() && $session->shrinkagePct() > 2.0 ? 'text-rose-600' : 'text-slate-900' }} font-semibold">{{ $session->hasData() ? number_format($session->shrinkagePct(), 2) . '%' : '—' }}</strong></div>
                 <div>POTONG BASAH    : <strong class="text-amber-700 font-semibold">{{ number_format($session->wet_kg, 2) }} kg</strong></div>
                 <div>TIMBANG BERSIH  : <strong class="text-emerald-700 text-sm font-semibold">{{ $session->hasData() ? number_format($session->netTotal(), 2) . ' kg' : '—' }}</strong></div>
-            </div>
-
-            <!-- SIGNATURE BLOCK -->
-            <div class="grid grid-cols-3 gap-4 text-center text-xs font-mono pt-4 border-t border-slate-300">
-                <div>
-                    <p class="text-slate-500 mb-12">Sopir Armada,</p>
-                    <p class="font-semibold border-t border-slate-400 pt-1 mx-4">( {{ $session->vehicle_no }} )</p>
-                </div>
             </div>
 
         </div>

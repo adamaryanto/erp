@@ -4,6 +4,7 @@ namespace App\Http\Controllers\api;
 
 use App\Events\WeightReceived;
 use App\Http\Controllers\Controller;
+use App\Models\DeliveryOrder;
 use App\Models\DeliverySession;
 use App\Models\LineCounter;
 use App\Models\ScaleStation;
@@ -113,9 +114,9 @@ class WeighingController extends Controller
 
         $age = (int) abs(now()->diffInSeconds(Carbon::parse($live['at'])));
 
-        // CAM jalan ~5 dtk/frame (jepret + infer + jeda), jadi toleransi
-        // koneknya lebih longgar dari mesin (bridge kirim tiap <1 dtk).
-        $maxAge = $source === 'cam' ? 12 : 3;
+        // CAM ~1.5 bacaan/detik: umur >2 dtk sudah basi. Peringatan kuning
+        // di 2 dtk (badge), putus di 3 dtk — angka hantu tidak dipajang lama.
+        $maxAge = $source === 'cam' ? 3 : 3;
 
         return response()->json([
             'station' => $code,
@@ -289,12 +290,14 @@ class WeighingController extends Controller
      */
     public function finalize(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'supplier_id' => 'required|exists:suppliers,id',
+        try {
+            $validated = $request->validate([
+            'supplier_id' => 'nullable|exists:suppliers,id',
+            'do_id' => 'nullable|exists:delivery_orders,id',
             'basket_id' => 'required|exists:baskets,id',
             'station' => 'nullable|string|max:20',
             'source' => 'nullable|string|max:10',
-            'vehicle_no' => 'required|string',
+            'vehicle_no' => 'nullable|string|max:20',
             'gross_avg' => 'required|numeric',
             'tare_kg' => 'required|numeric|between:1,10',
             'min_kg' => 'required|numeric',
@@ -303,7 +306,15 @@ class WeighingController extends Controller
             'raw_samples' => 'required|array',
             'is_manual_tare' => 'boolean',
             'note' => 'nullable|string',
-        ]);
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // Catat payload ringkas (tanpa raw_samples yg panjang) biar 422
+            // bisa ditelusur dari laravel.log tanpa tebak-tebakan.
+            $payload = $request->except('raw_samples');
+            $payload['raw_samples_count'] = is_array($request->input('raw_samples')) ? count($request->input('raw_samples')) : null;
+            \Illuminate\Support\Facades\Log::warning('finalize 422', ['errors' => $e->errors(), 'payload' => $payload]);
+            throw $e;
+        }
 
         $netKg = $validated['gross_avg'] - $validated['tare_kg'];
 
@@ -316,13 +327,29 @@ class WeighingController extends Controller
 
         $station = ScaleStation::resolve($validated['station'] ?? null);
 
+        // Privasi pemasok: halaman timbang kirim do_id, supplier diisi server
+        // dari DO (nama pemasok tidak pernah turun ke browser operator).
+        $doId = $validated['do_id'] ?? null;
+        $supplierId = $validated['supplier_id'] ?? null;
+        if ($doId) {
+            $do = DeliveryOrder::findOrFail($doId);
+            $supplierId = $do->supplier_id;
+        }
+        if (! $supplierId) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Pilih No. DO dulu (atau supplier).',
+            ], 422);
+        }
+
         $weighing = Weighing::create([
-            'supplier_id' => $validated['supplier_id'],
+            'supplier_id' => $supplierId,
+            'do_id' => $doId,
             'basket_id' => $validated['basket_id'],
             'scale_station_id' => $station->id,
             'source' => $this->sourceCode($request),
             'operator_id' => $operatorId,
-            'vehicle_no' => $validated['vehicle_no'],
+            'vehicle_no' => strtoupper(trim($validated['vehicle_no'] ?? '')) ?: '-',
             'weighed_at' => now(),
             'gross_avg' => $validated['gross_avg'],
             'tare_kg' => $validated['tare_kg'],

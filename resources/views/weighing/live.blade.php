@@ -5,8 +5,7 @@
 @section('content')
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    {{-- Alpine + Chart dimuat lokal via @vite (resources/js/app.js) — jangan pakai CDN, PC pos timbang sering offline. --}}
     <style>
         .font-led { font-family: 'JetBrains Mono', ui-monospace, monospace; }
         .text-led-green { color: #00FF88; }
@@ -88,7 +87,7 @@
 
                 <div class="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
                     <div class="flex items-center justify-between mb-2">
-                        <span class="text-xs font-bold text-gray-700 uppercase">Fluktuasi Timbang 4 Detik Terakhir (40 Titik Sample)</span>
+                        <span class="text-xs font-bold text-gray-700 uppercase">Fluktuasi Timbang 5 Detik Terakhir (50 Titik Sample)</span>
                         <span class="text-[10px] font-mono text-gray-400">100ms Streaming</span>
                     </div>
                     <div class="h-40 w-full"><canvas id="realtimeChart"></canvas></div>
@@ -103,9 +102,12 @@
                     @include('weighing.partials.mesin-form')
                 @endif
 
+                <!-- SLOT STATUS LOOP (tinggi tetap): sampling / hasil / tunggu bergantian
+                     mengisi slot ini — halaman tidak loncat saat panel ganti tiap siklus. -->
+                <div x-show="autoLoop || isSampling || showResult" class="min-h-[320px]">
                 <div x-show="isSampling" x-transition class="bg-blue-50 border border-blue-200 p-4 rounded-lg space-y-2">
                     <div class="flex justify-between text-xs font-bold text-blue-700">
-                        <span>SAMPLING TRIMMED MEAN (4 DETIK)</span>
+                        <span x-text="'SAMPLING TRIMMED MEAN (' + samplingTotalSec + ' DETIK)'"></span>
                         <span class="font-mono text-sm" x-text="samplingCountdown + ' DETIK'"></span>
                     </div>
                     <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
@@ -113,7 +115,7 @@
                     </div>
                 </div>
 
-                <div x-show="showResult && resultData" x-transition class="bg-white p-5 rounded-lg border-2 border-blue-600 shadow-md space-y-4">
+                <div x-show="!isSampling && showResult && resultData" x-transition class="bg-white p-5 rounded-lg border-2 border-blue-600 shadow-md space-y-4">
                     <div class="flex justify-between items-center border-b border-gray-100 pb-2">
                         <span class="text-xs font-extrabold text-blue-700 uppercase">HASIL TRIMMED MEAN</span>
                         <span class="text-xs font-mono text-gray-500" x-text="resultData ? resultData.jam : ''"></span>
@@ -143,7 +145,7 @@
                         </div>
                         <div class="bg-gray-50 p-2 rounded border border-gray-200">
                             <span class="text-[10px] text-gray-400 block">SELISIH</span>
-                            <span class="font-bold" :class="resultData && resultData.selisih > 0.8 ? 'text-amber-600' : 'text-emerald-600'" x-text="resultData ? resultData.selisih.toFixed(2) + ' kg' : '-'"></span>
+                            <span class="font-bold" :class="resultData && resultData.goyangWarning ? 'text-amber-600' : 'text-emerald-600'" x-text="resultData ? resultData.selisih.toFixed(2) + ' kg' : '-'"></span>
                         </div>
                     </div>
                     <template x-if="resultData && resultData.goyangWarning">
@@ -156,6 +158,15 @@
                         <button @click="saveResult(false)" class="flex-1 h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded shadow-sm">SIMPAN</button>
                         <button @click="resetResult()" class="h-11 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-sm rounded border border-gray-300">ULANGI</button>
                     </div>
+                </div>
+                <!-- Status tunggu: mengisi slot saat loop jalan tapi tidak sampling,
+                     jadi fase selalu kelihatan (penting saat hectic). -->
+                <div x-show="autoLoop && !isSampling && !showResult" class="bg-emerald-50 border-2 border-emerald-300 rounded-lg p-5 text-center space-y-2">
+                    <div class="text-[11px] font-bold text-emerald-600 tracking-widest">STATUS LOOP</div>
+                    <div class="text-2xl font-black text-emerald-700 uppercase" x-text="autoStatusText"></div>
+                    <div class="font-mono text-5xl font-black text-gray-900" x-text="liveDisplayFormatted + ' kg'"></div>
+                    <div class="font-mono text-xs text-gray-600">Tercatat: <strong x-text="'#' + autoCount"></strong> • Total: <strong x-text="autoTotalNetto.toFixed(2) + ' kg'"></strong></div>
+                </div>
                 </div>
             </div>
         </div>
@@ -177,13 +188,19 @@
         // STABIL: trigger sampling hanya kalau sebaran <= 0.6 kg. Tanpa ini,
         // angka lagi NAIK/GUNCANG ikut ke-sampling → record dobel nonstop.
         let wWindow = [];
-        // Cooldown 2 detik tiap habis nangkep: biar tidak langsung sampling
+        // Cooldown 1 detik tiap habis sampling + jeda 1 detik tiap habis
+        // tercatat (di-refresh di saveResult): biar tidak langsung sampling
         // lagi di tengah transisi (turun/naik) yang bikin hasil sampah.
         let loopCooldownUntil = 0;
         function __wStable() {
-            if (wWindow.length < 10) return false;
+            // Hanya 10 sampel terakhir (±1 detik) yang dinilai. Kalau seluruh
+            // jendela ikut dihitung, transisi penempatan (lonjakan belasan kg)
+            // harus nunggu ke-flush ±2 detik padahal angka sudah pas — itu yang
+            // bikin loading lama muncul. Gerak dikit (≤0.6 kg) tetap lolos.
+            const n = Math.min(wWindow.length, 10);
+            if (n < 2) return false;
             let mn = Infinity, mx = -Infinity;
-            for (let i = 0; i < wWindow.length; i++) {
+            for (let i = wWindow.length - n; i < wWindow.length; i++) {
                 const v = wWindow[i];
                 if (v < mn) mn = v;
                 if (v > mx) mx = v;
@@ -192,12 +209,15 @@
         }
         function liveTimbang() {
             return {
-                dbSuppliers: @json($suppliers ?? []),
+                dbOrders: @json($openOrders ?? []),
                 dbBaskets: @json($baskets ?? []),
                 dbStations: @json($stations ?? []),
                 selectedStation: (@json($stations[0]->code ?? 'POS-01')),
                 triggerKg: {{ $settings->auto_trigger_kg ?? 10 }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
+                unstableKg: {{ $settings->unstable_threshold_kg ?? 0.8 }},
+                autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
+                manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
                 mode: '{{ $mode ?? 'mesin' }}',
 
                 isConnected: false,
@@ -206,6 +226,8 @@
                 backendAge: null,
                 pollCount: 0,
                 pollErr: '',
+                _pollBusy: false,
+                _fastPollAt: 0,
                 weightSource: 'bridge',
                 usbSupported: (typeof navigator !== 'undefined' && 'serial' in navigator),
                 usbConnected: false,
@@ -222,7 +244,7 @@
                 usbRawLines: [],
                 liveRawWeight: 0,
                 liveStatus: '—',
-                selectedSupplier: '',
+                selectedDo: '',
 
                 noMobil: '',
                 driverName: '',
@@ -256,12 +278,16 @@
                 roiSnapBusy: false,
                 roiTestBusy: false,
                 roiAutoBusy: false,
+                roiCalBusy: false,
                 roiSaveBusy: false,
                 roiTestResult: '',
                 roiTestWeight: null,
                 
                 autoLoop: false,
                 autoArmed: true,
+                resting: false,
+                _discardStreak: 0,
+                _saveFailStreak: 0,
                 autoCount: 0,
                 autoTotalNetto: 0,
                 autoStart: false,
@@ -270,7 +296,10 @@
 
                 isSampling: false,
                 samplingCountdown: 4,
+                samplingTotalSec: 2,
                 samplingProgress: 0,
+                _sampleMaxAge: 0,
+                _lastTransitToast: 0,
                 sampleStartW: 0,
                 samplesCollected: [],
                 samplingTimer: null,
@@ -290,9 +319,9 @@
                     }
                     return [{ id: 'B01', dbId: null, label: 'K basket B01 - tare 2.8kg', tare: 2.8 }];
                 },
-                get suppliers() {
-                    if (this.dbSuppliers && this.dbSuppliers.length) return this.dbSuppliers.map(s => s.name);
-                    return [];
+                get orderLabel() {
+                    const o = (this.dbOrders || []).find(x => String(x.id) === String(this.selectedDo));
+                    return o ? `${o.number} — ${Number(o.target_kg).toFixed(2)} kg` : '—';
                 },
                 get bridgePillLabel() {
                     // CAM mode: status bridge (fallback mesin)
@@ -329,6 +358,8 @@
                     this.autoLoop = false;
                     this.autoStopped = false;
                     this.autoArmed = true;
+                    this.resting = false;
+                    this._discardStreak = 0;
                     this.autoCount = 0;
                     this.autoTotalNetto = 0;
                     this.isSampling = false;
@@ -378,9 +409,16 @@
                 },
                 get autoStatusText() {
                     if (!this.canWeigh) return 'TIMBANGAN PUTUS';
-                    if (this.isSampling) return 'MENGHITUNG 4 DETIK… JANGAN ANGKAT';
-                    if (!this.autoArmed) return 'TERCATAT — ANGKAT, TUNGGU NOL';
-                    return 'TARUH KERANJANG (>10 KG)';
+                    if (this.isSampling) return `MENGHITUNG ${this.samplingCountdown} DETIK… JANGAN ANGKAT`;
+                    if (this.resting) return 'JEDA SEBENTAR — SIAPKAN KERANJANG';
+                    if (!this.autoArmed) return (this.lastBasketW === null && this.autoCount === 0)
+                        ? 'MENUNGGU STABIL — TAHAN KERANJANG'
+                        : 'TERCATAT — TARUH BERIKUTNYA';
+                    // Sudah armed: kasih tahu KENAPA belum menghitung, biar
+                    // operator tidak bengong (kasus kemarin: dikira nge-hang).
+                    if (this.effectiveRawWeight <= this.triggerKg) return 'TARUH KERANJANG (>10 KG)';
+                    if (!__wStable()) return 'MENUNGGU STABIL — TAHAN KERANJANG';
+                    return 'SIAP — MENGHITUNG…';
                 },
 
                 async connectUsb() {
@@ -539,6 +577,10 @@
                 },
                 async pollBackendLive() {
                     if (this.weightSource === 'usb') return;
+                    // Cegah request numpuk (penting saat fast-poll sampling):
+                    // artisan serve single-thread, antrean = semua macet.
+                    if (this._pollBusy) return;
+                    this._pollBusy = true;
                     const was = this.isConnected;
                     // Timeout 10 dtk: fetch yang nyangkut selamanya bikin polling
                     // kelihatan mati (tidak sukses, tidak error). Abort biar ketahuan.
@@ -554,6 +596,11 @@
                         this.pollCount++;
                         window.__pollN = (window.__pollN || 0) + 1;
                         this.pollErr = '';
+                        // Titip payload + render LED langsung di tick yang sama:
+                        // angka LED dan state loop selalu bareng, tanpa fetch dobel.
+                        window.__lastLivePayload = data;
+                        window.__lastAlpinePollAt = Date.now();
+                        try { __renderLed(data); } catch (e) {}
                         this.isConnected = this.backendConnected;
                         if (!this.isConnected) {
                             this.autoStopped = false;
@@ -562,7 +609,7 @@
                         }
                         if (this.backendWeight !== null) {
                             this.liveRawWeight = this.backendWeight;
-                            this.liveStatus = 'STABIL';
+                            this.liveStatus = (this.backendAge !== null && this.backendAge > 2) ? 'MACET' : 'STABIL';
                         } else {
                             this.liveRawWeight = 0;
                             this.liveStatus = '—';
@@ -577,6 +624,7 @@
                         this.liveStatus = '—';
                     } finally {
                         clearTimeout(to);
+                        this._pollBusy = false;
                     }
                 },
                 async recheckConnection() {
@@ -659,7 +707,7 @@
                         const res = await fetch('/api/cam/service/start', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation, interval: 0.2 }),
+                            body: JSON.stringify({ station: this.selectedStation, interval: 0.1 }),
                         });
                         const data = await res.json();
                         if (data.status === 'error') {
@@ -701,7 +749,7 @@
                         const res = await fetch('/api/cam/service/start', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation, interval: 0.2 }),
+                            body: JSON.stringify({ station: this.selectedStation, interval: 0.1 }),
                         });
                         const data = await res.json();
                         if (data.status === 'running') {
@@ -833,6 +881,39 @@
                     }
                     this.roiAutoBusy = false;
                 },
+                async autoCalibrate() {
+                    if (this.roiCalBusy) return;
+                    if (!confirm('Kalibrasi full-mandiri: service di-STOP, deteksi 4 arah (±2-4 mnt, halaman jangan ditutup), ROI+Putar disimpan otomatis, service START lagi. Lanjut?')) return;
+                    this.roiCalBusy = true;
+                    this.roiTestResult = 'Kalibrasi mandiri jalan… JANGAN tutup halaman (±2-4 menit).';
+                    this.roiTestWeight = null;
+                    try {
+                        const ctl = new AbortController();
+                        const to = setTimeout(() => ctl.abort(), 450000);
+                        const res = await fetch('/api/cam/roi/autocal', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ station: this.selectedStation }),
+                            signal: ctl.signal,
+                        });
+                        clearTimeout(to);
+                        const data = await res.json();
+                        if (data.status === 'done' && data.roi) {
+                            const p = String(data.roi).split(',').map(Number);
+                            if (p.length === 4 && p.every(Number.isFinite)) {
+                                [this.roiX, this.roiY, this.roiW, this.roiH] = p;
+                            }
+                            this.roiTestResult = `FULL AUTO OK: putar ${data.rotate}°, ROI ${data.roi} (baca: ${data.text || '?'})${data.restarted ? ' — service jalan lagi' : (data.was_running ? ' — service GAGAL restart, START manual!' : '')}`;
+                            this.triggerToast('Kalibrasi mandiri selesai');
+                            this.refreshServiceStatus();
+                        } else {
+                            this.roiTestResult = `Kalibrasi gagal: ${data.message || ''} ${(data.log || '').split('\n').slice(-3).join(' ')}`;
+                        }
+                    } catch (e) {
+                        this.roiTestResult = `Error: ${e.message}`;
+                    }
+                    this.roiCalBusy = false;
+                },
                 async testRoiOcr() {                    if (this.roiTestBusy) return;
                     this.roiTestBusy = true;
                     try {
@@ -889,7 +970,7 @@
                 restoreSession() {
                     try {
                         const s = JSON.parse(localStorage.getItem('timbang_session') || '{}');
-                        if (s.supplier) this.selectedSupplier = s.supplier;
+                        if (s.do) this.selectedDo = s.do;
                         if (s.vehicle) this.noMobil = s.vehicle;
                         if (s.driver) this.driverName = s.driver;
                         if (s.jenis) this.jenisAyam = s.jenis;
@@ -902,7 +983,7 @@
                 saveSession() {
                     try {
                         localStorage.setItem('timbang_session', JSON.stringify({
-                            supplier: this.selectedSupplier,
+                            do: this.selectedDo,
                             vehicle: this.noMobil,
                             driver: this.driverName,
                             jenis: this.jenisAyam,
@@ -913,7 +994,8 @@
                     } catch (e) {}
                 },
                 sessionComplete() {
-                    return !!(this.selectedSupplier && this.noMobil && this.selectedKeranjang);
+                    // Cam: cukup DO + keranjang (plat/supir diisi sesi, bukan di sini).
+                    return !!(this.selectedDo && this.selectedKeranjang && (this.isCamMode || this.noMobil));
                 },
                 startAuto(manual) {
                     if (!this.canWeigh) {
@@ -921,12 +1003,15 @@
                         return false;
                     }
                     if (!this.sessionComplete()) {
-                        if (manual) this.triggerToast('Isi Supplier, No. Mobil, dan Keranjang dulu');
+                        if (manual) this.triggerToast(this.isCamMode ? 'Isi No. DO dan Keranjang dulu' : 'Isi No. DO, No. Mobil, dan Keranjang dulu');
                         return false;
                     }
                     this.autoLoop = true;
                     this.autoStopped = false;
                     this.autoArmed = true;
+                    this.resting = false;
+                    this._discardStreak = 0;
+                    this._saveFailStreak = 0;
                     wWindow.length = 0;
                     loopCooldownUntil = 0;
                     this.autoCount = 0;
@@ -951,7 +1036,7 @@
                     // polling 2x/detik bikin antrean request — semua tombol (termasuk
                     // STOP) terasa macet. LED cam update tiap ~5 dtk, jadi 1.5 dtk cukup.
                     // Tab tidak aktif → skip polling biar antrean tidak numpuk.
-                    setInterval(() => { if (!document.hidden) this.pollBackendLive(); }, 1500);
+                    setInterval(() => { if (!document.hidden) this.pollBackendLive(); }, 1000);
                     this.refreshServiceStatus();
                     setInterval(() => this.refreshServiceStatus(), 5000);
                     try { this.initChart(); } catch (e) { console.warn('chart off', e); }
@@ -977,6 +1062,18 @@
                                 this.samplesCollected.push(w + (Math.random() - 0.5) * 0.06);
                             } else {
                                 this.samplesCollected.push(this.liveRawWeight);
+                            }
+                            // Umur data tertua selama sampling: kalau daemon macet,
+                            // semua sampel = angka basi yang sama → tolak di finish.
+                            const _ag = Number(this.backendAge);
+                            if (!isNaN(_ag)) this._sampleMaxAge = Math.max(this._sampleMaxAge || 0, _ag);
+                            // Fast-poll khusus saat sampling: liveRawWeight normalnya
+                            // refresh tiap 1.5 dtk (cuma ~2 data unik per sampling 2 dtk).
+                            // Selama sampling, tarik tiap ~450ms -> ~5 data unik,
+                            // trimmed mean + min/max/stddev jadi bermakna.
+                            if (!document.hidden && !this._pollBusy && Date.now() - (this._fastPollAt || 0) > 100) {
+                                this._fastPollAt = Date.now();
+                                this.pollBackendLive();
                             }
                         }
                         this.tickAutoLoop();
@@ -1014,6 +1111,7 @@
                     if (this.autoLoop) {
                         this.autoLoop = false;
                         this.autoStopped = true;
+                        this.resting = false;
                         this.saveSession();
                         this.triggerToast(`Auto loop STOP — ${this.autoCount} keranjang, ${this.autoTotalNetto.toFixed(2)} kg`);
                         return;
@@ -1023,16 +1121,33 @@
                 tickAutoLoop() {
                     if (!this.autoLoop || this.isSampling) return;
                     const w = this.effectiveRawWeight;
+                    // Lompatan >3 kg = transisi (baru ditaruh / baru diangkat):
+                    // buang riwayat lama biar penilaian stabil mulai dari angka
+                    // segar — trigger langsung jalan begitu angka pas, tanpa
+                    // nunggu jendela lama ke-flush.
+                    if (wWindow.length && Math.abs(w - wWindow[wWindow.length - 1]) > 3) wWindow.length = 0;
                     wWindow.push(w);
                     if (wWindow.length > 20) wWindow.shift();
-                    if (this.autoArmed && w > this.triggerKg && __wStable() && Date.now() >= loopCooldownUntil) {
+                    if (this.autoArmed && w > this.triggerKg && __wStable() && Date.now() >= loopCooldownUntil
+                        // Jangan trigger pas angka lagi TURUN (baru diangkat, lewat
+                        // zona trigger): awal jendela > ujung 1kg = gerak turun.
+                        && (wWindow.length < 2 || (wWindow[0] - w) <= 1.0)) {
+                        // Anti-dobel DIMATIKAN (permintaan operator 9 Okt): tiap stabil
+                        // >10 kg langsung sampling, walau beratnya sama persis
+                        // dengan catatan terakhir. Jeda 2.5 dtk habis save + syarat
+                        // stabil tetap jadi rem alami biar tidak beruntun.
                         this.autoArmed = false;
                         this.startSampling();
                     } else if (!this.autoArmed && !this.showResult
                         // Re-arm kalau: kosong (diangkat habis) ATAU turun >5 kg
-                        // dari keranjang terakhir (signature nurunin di kerja hectic,
-                        // OCR sering kelewat momen pas 0).
-                        && (w < this.emptyKg || (this.lastBasketW !== null && w < this.lastBasketW - 5))) {
+                        // dari keranjang terakhir ATAU jeda habis (tanpa wajib NOL —
+                        // operator boleh langsung taruh berikutnya).
+                        && (w < this.emptyKg || (this.lastBasketW !== null && w < this.lastBasketW - 5)
+                            || Date.now() >= loopCooldownUntil
+                            // Belum pernah tercatat sesi ini + angka stabil tinggi:
+                            // dead-end (batal/gagal) boleh coba lagi, bukan macet.
+                            // Aman dari dobel: lastBasketW null = belum ada yg tersimpan.
+                            || (this.lastBasketW === null && w > this.triggerKg && __wStable() && Date.now() >= loopCooldownUntil))) {
                         this.autoArmed = true;
                         wWindow.length = 0;
                     }
@@ -1042,8 +1157,8 @@
                     if (this.isSampling || !this.canWeigh) return;
                     const w = this.effectiveRawWeight;
                     if (this.autoLoop && w <= this.triggerKg) return;
-                    if (!this.selectedSupplier || !this.noMobil || !this.selectedKeranjang) {
-                        this.triggerToast('Isi Supplier, No. Mobil, dan Keranjang dulu');
+                    if (!this.selectedDo || !this.selectedKeranjang || (!this.isCamMode && !this.noMobil)) {
+                        this.triggerToast(this.isCamMode ? 'Isi No. DO dan Keranjang dulu' : 'Isi No. DO, No. Mobil, dan Keranjang dulu');
                         return;
                     }
                     if (!this.autoLoop && w <= 0) {
@@ -1054,11 +1169,19 @@
                     this.showResult = false;
                     this.resultData = null;
                     this.resultEkor = '';
+                    this._sampleMaxAge = 0;
+                    // Tarik 1x langsung saat sampling mulai (biar t=0 segar,
+                    // tidak nunggu jadwal poll 1.5 dtk berikutnya).
+                    this.pollBackendLive();
                     this.sampleStartW = w;
                     this.samplesCollected = [];
-                    this.samplingCountdown = 5;
+                    // Durasi sampling ngikut Pengaturan (auto: auto_duration_sec,
+                    // manual: duration_sec) — ganti di /settings tanpa edit kode.
+                    const durSec = this.autoLoop ? this.autoDurationSec : this.manualDurationSec;
+                    this.samplingCountdown = durSec;
+                    this.samplingTotalSec = durSec;
                     this.samplingProgress = 0;
-                    const totalTimeMs = 4000;
+                    const totalTimeMs = durSec * 1000;
                     const startTime = Date.now();
                     this.samplingTimer = setInterval(() => {
                         const elapsed = Date.now() - startTime;
@@ -1068,7 +1191,10 @@
                             clearInterval(this.samplingTimer);
                             this.isSampling = false;
                             this.samplesCollected = [];
-                            this.triggerToast('Batal — keranjang diangkat duluan');
+                            if (Date.now() - (this._lastTransitToast || 0) > 5000) {
+                                this._lastTransitToast = Date.now();
+                                this.triggerToast('Batal — keranjang diangkat duluan');
+                            }
                             if (this.autoLoop) this.autoArmed = false;
                             return;
                         }
@@ -1096,26 +1222,87 @@
                     const minVal = Math.min(...this.samplesCollected);
                     const maxVal = Math.max(...this.samplesCollected);
                     const selisih = maxVal - minVal;
+                    // Stabilitas dinilai dari data TRIMMED, bukan mentah: 1-2
+                    // bacaan hantu (poll telat / 1x OCR ngaco di tengah set yang
+                    // sudah anteng) tidak ikut mem-veto. Inilah yang bikin kemarin
+                    // "LED sudah berhenti tapi tetap sampling ulang ±5 kg".
+                    // min/max mentah tetap disimpan apa adanya untuk audit.
+                    const tMin = trimmed.length ? Math.min(...trimmed) : minVal;
+                    const tMax = trimmed.length ? Math.max(...trimmed) : maxVal;
+                    const tSelisih = tMax - tMin;
                     const meanAll = this.samplesCollected.reduce((s, v) => s + v, 0) / n;
                     const stddev = Math.sqrt(this.samplesCollected.reduce((s, v) => s + Math.pow(v - meanAll, 2), 0) / n);
+                    const transitLimit = Number(this.unstableKg) || 0.8;
+                    const isStale = (this._sampleMaxAge || 0) > 4;
+                    // Arah gerak: paruh awal vs paruh akhir (rata-rata, kebal jitter).
+                    // Turun >0.5 = keranjang diangkat tengah sampling → buang walau
+                    // selisih lolos (turun pelan < ambang tapi konsisten).
+                    const half = Math.max(1, Math.floor(n / 2));
+                    const meanFirst = this.samplesCollected.slice(0, half).reduce((s, v) => s + v, 0) / half;
+                    const meanSecond = this.samplesCollected.slice(-half).reduce((s, v) => s + v, 0) / half;
+                    const isFalling = (meanFirst - meanSecond) > 0.5;
+                    // AUTO hectic: JANGAN buang hasil cuma karena goyang. Trimmed mean
+                    // sudah kebal outlier — goyang ±1-2 kg tetap disimpan (dengan
+                    // flag warning), karena "ke-record sedikit goyang" jauh lebih
+                    // berguna daripada "tidak ke-record sama sekali". Yang dibuang
+                    // hanya data benar-benar sampah: diangkat tengah sampling,
+                    // data macet, atau ayunan >3 kg.
+                    const hardLimit = Math.max(3.0, transitLimit);
+                    if (this.autoLoop && (tSelisih > hardLimit || isStale || isFalling)) {
+                        this.samplesCollected = [];
+                        this.showResult = false;
+                        this.resultData = null;
+                        this.autoArmed = true;
+                        wWindow.length = 0;
+                        // Backoff: gagal beruntun (angka goyang terus) → jeda
+                        // dilipatgandakan 0.5→1→2→4 dtk biar loading tidak kedip.
+                        // Reset begitu ada yang tercatat / loop di-restart.
+                        this._discardStreak = (this._discardStreak || 0) + 1;
+                        const backoff = Math.min(4000, 500 * Math.pow(2, this._discardStreak - 1));
+                        loopCooldownUntil = Date.now() + backoff;
+                        this.resting = true;
+                        setTimeout(() => { this.resting = false; }, backoff);
+                        if (Date.now() - (this._lastTransitToast || 0) > 5000) {
+                            this._lastTransitToast = Date.now();
+                            this.triggerToast(isStale
+                                ? 'Data macet — cek kamera/service'
+                                : (isFalling ? 'Keburu diangkat — sampling ulang' : `Goyangan liar (±${tSelisih.toFixed(2)} kg) — sampling ulang`));
+                        }
+                        return;
+                    }
                     this.resultData = {
                         jam: new Date().toTimeString().split(' ')[0],
-                        supplier: this.selectedSupplier, mobil: this.noMobil, keranjang: this.selectedKeranjang,
+                        doId: this.selectedDo ? Number(this.selectedDo) : null, doNumber: this.orderLabel, mobil: this.noMobil || '-', keranjang: this.selectedKeranjang,
                         bruto: brutoMean + tare, tare: tare, netto: brutoMean,
                         min: minVal, max: maxVal, selisih: selisih, stddev: stddev,
                         rawSamples: [...this.samplesCollected],
-                        goyangWarning: selisih > 0.8,
+                        goyangWarning: tSelisih > transitLimit,
                     };
                     this.showResult = true;
-                    loopCooldownUntil = Date.now() + 1000;
-                    if (this.autoLoop) setTimeout(() => this.saveResult(true), 1000);
+                    loopCooldownUntil = Date.now() + 500;
+                    // Auto: simpan LANGSUNG tanpa jeda 1 dtk (hasil tetap tampil
+                    // sekilas; cooldown di-refresh lagi habis save selesai).
+                    if (this.autoLoop) this.saveResult(true);
                 },
                 async saveResult(auto = false) {
                     if (!this.resultData) return;
-                    const sup = (this.dbSuppliers || []).find(s => s.name === this.resultData.supplier);
+                    // AUTO: angka lari jauh antara selesai sampling vs mau simpan
+                    // (diangkat/diganti tepat sebelum save) → jangan simpan sampah.
+                    if (auto && Math.abs(Number(this.effectiveRawWeight) - Number(this.resultData.netto)) > 2) {
+                        this.showResult = false;
+                        this.resultData = null;
+                        this.autoArmed = true;
+                        wWindow.length = 0;
+                        loopCooldownUntil = Date.now() + 500;
+                        if (Date.now() - (this._lastTransitToast || 0) > 5000) {
+                            this._lastTransitToast = Date.now();
+                            this.triggerToast('Angka lari sebelum simpan — sampling ulang');
+                        }
+                        return;
+                    }
                     const bkt = (this.dbBaskets || []).find(b => b.code === this.resultData.keranjang);
-                    if (!sup || !bkt) {
-                        this.triggerToast('Master tidak cocok DB — cek Supplier/Keranjang di /master');
+                    if (!bkt || !this.resultData.doId) {
+                        this.triggerToast(!bkt ? 'Master tidak cocok DB — cek Keranjang di /master' : 'Pilih No. DO dulu');
                         if (!auto) { this.showResult = false; this.resultData = null; }
                         else { this.showResult = false; this.resultData = null; }
                         return;
@@ -1128,7 +1315,7 @@
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                supplier_id: sup.id, basket_id: bkt.id,
+                                do_id: this.resultData.doId, basket_id: bkt.id,
                                 station: this.selectedStation,
                                 source: this.source,
                                 vehicle_no: this.resultData.mobil,
@@ -1141,9 +1328,22 @@
                                 is_manual_tare: false, note: noteParts.length ? noteParts.join(' | ') : null,
                             }),
                         });
-                        if (!res.ok) throw new Error('http ' + res.status);
+                        if (!res.ok) {
+                            let detail = 'http ' + res.status;
+                            try {
+                                const ej = await res.json();
+                                const first = ej && ej.errors ? Object.values(ej.errors).flat()[0] : (ej.message || '');
+                                if (first) detail += ': ' + first;
+                            } catch (e2) {}
+                            throw new Error(detail);
+                        }
                         const saved = await res.json();
-                        const g = Number(saved.weighing.gross_avg || 0);
+                        // lastBasketW WAJIB satu satuan dengan w (effectiveRawWeight
+                        // = netto live). Dulu pakai gross_avg → selisih sebesar tare
+                        // (6-7 kg) bikin syarat re-arm "w < last-5" langsung TRUE
+                        // padahal keranjang belum diangkat → re-arm + sampling lagi
+                        // dalam 1 detik = double input. Pakai net_kg sekarang.
+                        const g = Number((saved.weighing.net_kg ?? saved.weighing.gross_avg) || 0);
                         if (g > 0) this.lastBasketW = g;
                         if (auto) {
                             this.autoCount += 1;
@@ -1153,12 +1353,39 @@
                             this.triggerToast('Bukti Timbang Berhasil Disimpan (ID #' + saved.weighing.id + ')');
                         }
                     } catch (e) {
-                        this.triggerToast('Gagal simpan ke server — ulangi');
-                        if (auto) { this.showResult = false; this.resultData = null; return; }
+                        this.triggerToast('Gagal simpan ke server (' + String((e && e.message) || e).slice(0, 40) + ') — ulangi');
+                        if (auto) {
+                            this.showResult = false;
+                            this.resultData = null;
+                            this._discardStreak = (this._discardStreak || 0) + 1;
+                            loopCooldownUntil = Date.now() + Math.min(4000, 500 * Math.pow(2, this._discardStreak - 1));
+                            // Gagal SIMPAN beruntun (misal DO basi) = loop tidak akan
+                            // pernah kecatat → STOP sekalian daripada muter selamanya.
+                            this._saveFailStreak = (this._saveFailStreak || 0) + 1;
+                            if (this._saveFailStreak >= 3) {
+                                this.autoLoop = false;
+                                this.autoStopped = true;
+                                this._saveFailStreak = 0;
+                                this.triggerToast('Auto STOP — save gagal 3x beruntun. Benerin (cek DO/keranjang), terus START lagi.');
+                            }
+                            return;
+                        }
                     }
                     this.showResult = false;
                     this.resultData = null;
                     this.resultEkor = '';
+                    if (auto) {
+                        // Jeda 2.5 dtk SETELAH tercatat (dihitung dari save selesai):
+                        // anti-dobel — keranjang yg sama jangan langsung ke-sampling
+                        // lagi. wWindow dikosongkan biar status STABIL harus dibangun
+                        // ulang dari angka segar (tidak langsung trigger).
+                        loopCooldownUntil = Date.now() + 2500;
+                        this.resting = true;
+                        wWindow.length = 0;
+                        setTimeout(() => { this.resting = false; }, 2500);
+                        this._discardStreak = 0;
+                        this._saveFailStreak = 0;
+                    }
                 },
                 resetResult() {
                     this.showResult = false;
@@ -1176,6 +1403,7 @@
         function __ledSet(id, txt) { var el = document.getElementById(id); if (el) el.textContent = txt; }
         var __BADGE = {
             stabil: '<span class="px-2.5 py-0.5 rounded font-black bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 inline-flex items-center gap-1"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>STABIL</span>',
+            stale: '<span class="px-2.5 py-0.5 rounded font-black bg-amber-500/20 text-amber-400 border border-amber-500/40 inline-flex items-center gap-1">TAHAN — DATA LAMA</span>',
             cam: '<span class="px-2.5 py-0.5 rounded font-black bg-blue-500/20 text-blue-400 border border-blue-500/40 inline-flex items-center gap-1">CAM MANDIRI</span>',
             off: '<span class="px-2.5 py-0.5 rounded font-black bg-slate-800 text-slate-500 border border-slate-700 inline-flex items-center gap-1">DISCONNECTED</span>'
         };
@@ -1224,24 +1452,20 @@
                 var root = document.querySelector('[x-data]');
                 var st = (root && root._x_dataStack) ? root._x_dataStack[0] : null;
                 if (!st || !st.autoLoop) { el.textContent = 'LOOP: MATI'; return; }
-                var phase = st.isSampling ? 'MENGHITUNG 4 DETIK… JANGAN ANGKAT'
-                    : (!st.autoArmed ? 'TERCATAT — ANGKAT KERANJANG, TUNGGU NOL' : 'SIAP — TARUH KERANJANG (>10 KG)');
+                var phase = st.isSampling ? ('MENGHITUNG ' + (st.samplingCountdown ?? '') + ' DETIK… JANGAN ANGKAT')
+                    : (st.resting ? 'JEDA SEBENTAR — SIAPKAN KERANJANG'
+                    : (!st.autoArmed ? ((st.lastBasketW === null && st.autoCount === 0) ? 'MENUNGGU STABIL — TAHAN KERANJANG' : 'TERCATAT — TARUH BERIKUTNYA') : 'SIAP — TARUH KERANJANG (>10 KG)'));
                 el.textContent = 'LOOP: JALAN • #' + st.autoCount + ' • '
                     + Number(st.autoTotalNetto || 0).toFixed(2) + ' kg • ' + phase;
             } catch (e) {}
         }
-        async function __driveLed() {
+        function __renderLed(d) {
+            // Render 1 payload live ke LED + badge + ringkasan. Dipakai driver
+            // 1-detik DAN poll Alpine — angka & indikator selalu dari data
+            // yang sama di tick yang sama.
             try {
                 var panel = document.getElementById('ledPanel');
                 var mode = panel ? (panel.getAttribute('data-mode') || 'mesin') : 'mesin';
-                var stEl = document.getElementById('stationSelect');
-                var station = (stEl && stEl.value) || 'POS-01';
-                var source = (mode === 'cam') ? 'cam' : 'mesin';
-                var ctl = new AbortController();
-                var to = setTimeout(function () { ctl.abort(); }, 10000);
-                var res = await fetch('/api/weighings/live?station=' + encodeURIComponent(station) + '&source=' + source, { signal: ctl.signal });
-                clearTimeout(to);
-                var d = await res.json();
                 var on = !!d.connected && d.weight !== null && d.weight !== undefined;
                 var val = null;
                 if (on) { val = Number(d.weight); }
@@ -1249,7 +1473,9 @@
                 if (on) __ledSet('ledMsg', '');
                 __ledSet('ledAge', (d.age_seconds !== null && d.age_seconds !== undefined) ? ('update ' + d.age_seconds + 's lalu') : '');
                 var box = document.getElementById('ledStatus');
-                if (box) box.innerHTML = on ? __BADGE.stabil : (mode === 'cam' ? __BADGE.cam : __BADGE.off);
+                // Umur >2 dtk = angka basi (nyangkut): jangan cap STABIL.
+                var stale = on && d.age_seconds !== null && d.age_seconds !== undefined && d.age_seconds > 2;
+                if (box) box.innerHTML = !on ? (mode === 'cam' ? __BADGE.cam : __BADGE.off) : (stale ? __BADGE.stale : __BADGE.stabil);
                 // Rata-rata per keranjang: tiap angka BARU = 1 keranjang.
                 // netto = bruto − tare (rumus DHK), rata-rata = mean netto.
                 if (on && mode === 'cam') {
@@ -1264,6 +1490,31 @@
                     __renderRk();
                 }
                 __calcEkor();
+            } catch (e) {}
+        }
+        async function __driveLed() {
+            try {
+                // Kalau poll Alpine baru saja sukses (<1.2 dtk), pakai payload
+                // itu langsung — tanpa fetch dobel (server single-thread!) dan
+                // tanpa jeda antara LED dan loop.
+                var fresh = window.__lastLivePayload && (Date.now() - (window.__lastAlpinePollAt || 0) < 1200);
+                if (fresh && !document.hidden) {
+                    __renderLed(window.__lastLivePayload);
+                    return;
+                }
+                var panel = document.getElementById('ledPanel');
+                var mode = panel ? (panel.getAttribute('data-mode') || 'mesin') : 'mesin';
+                var stEl = document.getElementById('stationSelect');
+                var station = (stEl && stEl.value) || 'POS-01';
+                var source = (mode === 'cam') ? 'cam' : 'mesin';
+                var ctl = new AbortController();
+                var to = setTimeout(function () { ctl.abort(); }, 10000);
+                var res = await fetch('/api/weighings/live?station=' + encodeURIComponent(station) + '&source=' + source, { signal: ctl.signal });
+                clearTimeout(to);
+                var d = await res.json();
+                window.__lastLivePayload = d;
+                window.__lastAlpinePollAt = Date.now();
+                __renderLed(d);
             } catch (e) {}
         }
         setInterval(function () {

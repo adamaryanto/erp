@@ -160,8 +160,8 @@
 
                 <div>
                     <label class="block text-sm text-gray-700">Auto Duration (detik)</label>
-                    <input type="number" name="auto_duration_sec" value="{{ $settings->auto_duration_sec }}" min="1" max="60" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                    <p class="text-gray-600 text-xs mt-2">Durasi sampling di mode auto (biasanya sama dengan duration_sec)</p>
+                    <input type="number" name="auto_duration_sec" value="{{ $settings->auto_duration_sec }}" step="0.5" min="0.5" max="60" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="text-gray-600 text-xs mt-2">Durasi sampling di mode auto. Di bawah 1 dtk = praktis 1x jepret (statistik + tolak-gerak lumpuh).</p>
                     @error('auto_duration_sec') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
                 </div>
             </div>
@@ -219,6 +219,17 @@
                 <input type="text" name="cam_stream_url" value="{{ $settings->cam_stream_url ?? '' }}" placeholder="cth: http://192.168.1.50:8080/videofeed" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-xs">
                 <p class="text-gray-600 text-xs mt-2">Pratinjau jadi video live tanpa refresh. Kosongkan = pakai Snapshot URL (refresh 2 detik).</p>
                 @error('cam_stream_url') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
+            </div>
+            <div>
+                <label class="block text-sm text-gray-700">Putar Gambar Kamera</label>
+                <select name="cam_rotate" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <option value="0" @selected((int) ($settings->cam_rotate ?? 0) === 0)>0° — normal (HP landscape)</option>
+                    <option value="90" @selected((int) ($settings->cam_rotate ?? 0) === 90)>90° — HP miring kanan</option>
+                    <option value="180" @selected((int) ($settings->cam_rotate ?? 0) === 180)>180° — HP terbalik</option>
+                    <option value="270" @selected((int) ($settings->cam_rotate ?? 0) === 270)>270° — HP miring kiri</option>
+                </select>
+                <p class="text-gray-600 text-xs mt-2">Kalau HP miring, gambar diputar balik oleh server sebelum OCR — ROI & kalibrasi tetap dalam posisi tegak. Ganti ini → STOP + START ulang service.</p>
+                @error('cam_rotate') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
             </div>
             <div>
                 <label class="block text-sm text-gray-700">Batas keyakinan OCR (0–1)</label>

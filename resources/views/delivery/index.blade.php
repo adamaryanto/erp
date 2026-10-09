@@ -44,8 +44,18 @@
                     </div>
 
                     <div>
+                        <label class="block text-xs font-normal text-slate-600 mb-1">Pilih No. DO / Faktur <span class="text-[10px] text-emerald-600">→ supplier + kg + ekor keisi otomatis</span></label>
+                        <select id="doSelect" name="do_id" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm text-slate-800 font-mono focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                            <option value="">-- Tanpa DO (isi manual) --</option>
+                            @foreach($openOrders as $o)
+                                <option value="{{ $o->id }}" data-supplier="{{ $o->supplier_id }}" data-kg="{{ $o->target_kg }}" data-ekor="{{ $o->target_ekor }}">{{ $o->number }} — {{ number_format($o->target_kg, 2, '.', ',') }} kg / {{ number_format($o->target_ekor) }} ekr</option>
+                            @endforeach
+                        </select>
+                    </div>
+
+                    <div>
                         <label class="block text-xs font-normal text-slate-600 mb-1">Supplier Plasma / Peternak <span class="text-rose-500">*</span></label>
-                        <select name="supplier_id" required class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm text-slate-800 font-normal focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                        <select name="supplier_id" id="supplierSelect" required class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm text-slate-800 font-normal focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
                             <option value="">-- Pilih Supplier Plasma --</option>
                             @foreach($suppliers as $s)
                                 <option value="{{ $s->id }}">{{ $s->name }}</option>
@@ -56,7 +66,7 @@
                     <div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block text-xs font-normal text-slate-600 mb-1">Nomor Mobil / Plat <span class="text-rose-500">*</span></label>
-                            <input type="text" name="vehicle_no" required placeholder="B 9482 FJA" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono uppercase focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                            <input type="text" name="vehicle_no" id="vehicleInput" required placeholder="B 9482 FJA" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono uppercase focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
                         </div>
                         <div>
                             <label class="block text-xs font-normal text-slate-600 mb-1">Tanggal Timbang <span class="text-rose-500">*</span></label>
@@ -66,7 +76,13 @@
 
                     <div>
                         <label class="block text-xs font-normal text-slate-600 mb-1">Nama Supir</label>
-                        <input type="text" name="driver_name" placeholder="cth: Danto" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm text-slate-800 focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                        <input type="text" name="driver_name" id="driverInput" list="driverList" placeholder="cth: Danto" autocomplete="off" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm text-slate-800 focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                        <datalist id="driverList">
+                            @foreach($knownDrivers as $d)
+                                <option value="{{ $d->driver_name }}" data-plate="{{ $d->vehicle_no }}"></option>
+                            @endforeach
+                        </datalist>
+                        <p class="text-[10px] text-slate-500 mt-1">Pilih supir lama → nomor mobil keisi otomatis.</p>
                     </div>
 
                     <div>
@@ -92,17 +108,17 @@
                 <div class="space-y-3 pb-3 border-b border-slate-100">
                     <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                         <svg class="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                        2. Target Surat Jalan (DO)
+                        2. Target Surat Jalan (DO) <span class="text-[10px] text-emerald-600 normal-case">(terisi otomatis dari No. DO di atas)</span>
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block text-xs font-normal text-slate-600 mb-1">Berat DO Asal (kg) <span class="text-rose-500">*</span></label>
-                            <input type="number" name="do_weight" required step="0.01" min="0" placeholder="3796.00" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                            <input type="number" name="do_weight" id="doWeightInput" required step="0.01" min="0" placeholder="3796.00" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
                         </div>
                         <div>
                             <label class="block text-xs font-normal text-slate-600 mb-1">Total Ekor Ayam <span class="text-rose-500">*</span></label>
-                            <input type="number" name="total_ekor" required step="1" min="0" placeholder="1540" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
+                            <input type="number" name="total_ekor" id="ekorInput" required step="1" min="0" placeholder="1540" class="w-full h-10 px-3 border border-slate-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-[#1976D2] focus:border-[#1976D2] transition">
                         </div>
                     </div>
                 </div>
@@ -165,7 +181,7 @@
                     <thead>
                         <tr class="bg-slate-100 text-slate-700 font-semibold uppercase tracking-wider border-b border-slate-200">
                             <th class="py-3 px-4">Tgl / Mobil</th>
-                            <th class="py-3 px-4">Supplier Plasma</th>
+                            <th class="py-3 px-4">No. DO</th>   
                             <th class="py-3 px-4 text-right">Netto Timbang</th>
                             <th class="py-3 px-4 text-right">Susut DO</th>
                             <th class="py-3 px-4 text-center">Aksi</th>
@@ -179,7 +195,7 @@
                                     <div class="text-[11px] text-slate-500 font-mono">{{ $s->delivered_at->format('d/m/Y') }}</div>
                                 </td>
                                 <td class="py-3 px-4">
-                                    <div class="text-slate-900 font-medium">{{ $s->supplier->name }}</div>
+                                    <div class="text-slate-900 font-medium font-mono">{{ $s->deliveryOrder->number ?? '—' }}</div>
                                     <div class="text-[10px] text-slate-400 font-mono">{{ $s->total_ekor }} ekor • DO: {{ number_format($s->do_weight, 2) }} kg</div>
                                 </td>
                                 <td class="py-3 px-4 text-right font-mono text-emerald-600 text-sm font-semibold">
@@ -238,6 +254,28 @@
         </div>
 
     </div>
+
+    <script>
+        // Pilih DO → supplier + kg + ekor keisi otomatis (masih bisa diubah manual).
+        document.getElementById('doSelect').addEventListener('change', function () {
+            const opt = this.selectedOptions[0];
+            if (!opt || !opt.value) return;
+            const sup = document.getElementById('supplierSelect');
+            const kg = document.getElementById('doWeightInput');
+            const ek = document.getElementById('ekorInput');
+            if (sup && opt.dataset.supplier) sup.value = opt.dataset.supplier;
+            if (kg && opt.dataset.kg) kg.value = opt.dataset.kg;
+            if (ek && opt.dataset.ekor) ek.value = opt.dataset.ekor;
+        });
+        // Ketik/pilih supir lama → plat terakhirnya keisi otomatis.
+        document.getElementById('driverInput').addEventListener('input', function () {
+            const list = document.getElementById('driverList');
+            const plate = document.getElementById('vehicleInput');
+            if (!list || !plate) return;
+            const hit = [...list.options].find(o => o.value.toLowerCase() === this.value.toLowerCase());
+            if (hit && hit.dataset.plate) plate.value = hit.dataset.plate;
+        });
+    </script>
 
 </div>
 @endsection

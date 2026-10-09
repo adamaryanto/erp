@@ -33,45 +33,12 @@
     </div>
 
     <div>
-        <label class="block text-xs font-semibold text-gray-600 mb-1">Sumber Angka (Kamera)</label>
-        <div class="flex gap-2" :class="(isSampling || autoLoop) ? 'opacity-50 pointer-events-none' : ''">
-            <button type="button" @click="setSource('cam')" disabled
-                    class="h-12 flex-1 rounded-md border bg-purple-600 text-white border-purple-600 text-sm uppercase tracking-wider transition">
-                KAMERA OCR
-            </button>
-        </div>
-        <p class="text-[11px] text-gray-400 mt-1">Angka dari kamera pembaca display 7-segmen.</p>
-    </div>
-
-    <div>
-        <label class="block text-xs font-semibold text-gray-600 mb-1">Supplier Plasma / Peternak</label>
-        <select x-model="selectedSupplier" @change="saveSession()" :disabled="isSampling || autoLoop"
-                class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-medium text-sm focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-            <option value="">-- Pilih Supplier --</option>
-            <template x-for="sup in suppliers" :key="sup"><option :value="sup" x-text="sup"></option></template>
+        <label class="block text-xs font-semibold text-gray-600 mb-1">No. DO / Faktur</label>
+        <select x-model="selectedDo" @change="saveSession()" :disabled="isSampling || autoLoop"
+                class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-mono font-bold text-sm focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
+            <option value="">-- Pilih No. DO --</option>
+            <template x-for="o in dbOrders" :key="o.id"><option :value="o.id" x-text="`${o.number} — ${Number(o.target_kg).toFixed(2)} kg`"></option></template>
         </select>
-    </div>
-
-    <div>
-        <label class="block text-xs font-semibold text-gray-600 mb-1">Nomor Mobil / Armada</label>
-        <input type="text" x-model="noMobil" @change="saveSession()" :disabled="isSampling || autoLoop" placeholder="B 1234 XYZ"
-               class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-mono font-bold text-base uppercase focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-    </div>
-
-    <div class="grid grid-cols-2 gap-2">
-        <div>
-            <label class="block text-xs font-semibold text-gray-600 mb-1">Nama Supir</label>
-            <input type="text" x-model="driverName" @change="saveSession()" :disabled="isSampling || autoLoop" placeholder="cth: Danto"
-                   class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-medium text-sm focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-        </div>
-        <div>
-            <label class="block text-xs font-semibold text-gray-600 mb-1">Jenis Ayam</label>
-            <select x-model="jenisAyam" @change="saveSession()" :disabled="isSampling || autoLoop"
-                    class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-medium text-sm focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-                <option value="biasa">Ayam Biasa</option>
-                <option value="parent">Parent</option>
-            </select>
-        </div>
     </div>
 
     <div>
@@ -135,7 +102,7 @@
             <template x-if="!autoLoop">
                 <span class="flex items-center gap-2">
                     <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
-                                    START AUTO LOOP (4 DETIK / KERANJANG)
+                                    <span x-text="'START AUTO LOOP (' + autoDurationSec + ' DETIK / KERANJANG)'"></span>
                 </span>
             </template>
         </button>

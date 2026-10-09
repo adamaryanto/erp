@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Setting extends Model
 {
-    protected $fillable = ['com_port', 'baud_rate', 'parity', 'parsing_regex', 'sampling_hz', 'duration_sec', 'trim_percent', 'unstable_threshold_kg', 'simulate_mode', 'simulate_noise_level', 'auto_mode_enabled', 'auto_trigger_kg', 'auto_empty_kg', 'auto_duration_sec', 'beep_enabled', 'printer_name', 'receipt_paper', 'receipt_footer', 'company_name', 'company_address', 'company_phone', 'company_logo', 'cam_snapshot_url', 'cam_stream_url', 'cam_roi', 'ocr_min_conf', 'cam_auto_service'];
+    protected $fillable = ['com_port', 'baud_rate', 'parity', 'parsing_regex', 'sampling_hz', 'duration_sec', 'trim_percent', 'unstable_threshold_kg', 'simulate_mode', 'simulate_noise_level', 'auto_mode_enabled', 'auto_trigger_kg', 'auto_empty_kg', 'auto_duration_sec', 'beep_enabled', 'printer_name', 'receipt_paper', 'receipt_footer', 'company_name', 'company_address', 'company_phone', 'company_logo', 'cam_snapshot_url', 'cam_stream_url', 'cam_roi', 'cam_rotate', 'ocr_min_conf', 'cam_auto_service'];
     protected function casts(): array
     {
         return [
@@ -47,6 +47,7 @@ class Setting extends Model
             'cam_snapshot_url' => '',
             'cam_stream_url' => '',
             'cam_roi' => '0.28,0.38,0.44,0.26',
+            'cam_rotate' => 0,
             'ocr_min_conf' => 0.4,
             'cam_auto_service' => false,
         ]);

@@ -24,11 +24,11 @@
     </div>
 
     <div>
-        <label class="block text-xs font-semibold text-gray-600 mb-1">Supplier Plasma / Peternak</label>
-        <select x-model="selectedSupplier" @change="saveSession()" :disabled="isSampling || autoLoop"
-                class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-medium text-sm focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
-            <option value="">-- Pilih Supplier --</option>
-            <template x-for="sup in suppliers" :key="sup"><option :value="sup" x-text="sup"></option></template>
+        <label class="block text-xs font-semibold text-gray-600 mb-1">No. DO / Faktur</label>
+        <select x-model="selectedDo" @change="saveSession()" :disabled="isSampling || autoLoop"
+                class="w-full h-12 bg-white border border-gray-300 rounded-md px-3 text-gray-800 font-mono font-bold text-sm focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
+            <option value="">-- Pilih No. DO --</option>
+            <template x-for="o in dbOrders" :key="o.id"><option :value="o.id" x-text="`${o.number} — ${Number(o.target_kg).toFixed(2)} kg`"></option></template>
         </select>
     </div>
 
@@ -60,7 +60,7 @@
             <template x-if="!isSampling && canWeigh && !autoLoop">
                 <div class="flex items-center gap-2">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    <span>TIMBANG 4 DETIK</span>
+                    <span x-text="'TIMBANG ' + manualDurationSec + ' DETIK'"></span>
                 </div>
             </template>
             <template x-if="isSampling">
@@ -92,7 +92,7 @@
             <template x-if="!autoLoop">
                 <span class="flex items-center gap-2">
                     <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
-                    START AUTO LOOP (4 DETIK / KERANJANG)
+                    <span x-text="'START AUTO LOOP (' + autoDurationSec + ' DETIK / KERANJANG)'"></span>
                 </span>
             </template>
         </button>
