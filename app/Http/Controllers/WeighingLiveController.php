@@ -29,7 +29,6 @@ class WeighingLiveController extends Controller
     private function render(string $mode): View
     {
         // Privasi pemasok: nama supplier TIDAK dikirim ke halaman timbang.
-        // Operator pilih No. DO (tanpa nama), supplier diisi server dari DO.
         $openOrders = DeliveryOrder::where('status', 'open')
             ->orderByDesc('issued_at')->orderByDesc('id')
             ->get(['id', 'number', 'target_kg', 'target_ekor']);

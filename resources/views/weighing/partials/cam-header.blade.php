@@ -223,7 +223,7 @@
                             x-text="roiAutoBusy ? 'MENDETEKSI… (±20 dtk)' : '🤖 AUTO ROI'"></button>
                     <button @click="autoCalibrate()" :disabled="roiCalBusy"
                             class="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold rounded transition"
-                            x-text="roiCalBusy ? 'KALIBRASI… (±4 mnt)' : '⚡ FULL AUTO (putar+ROI+restart)'"></button>
+                            x-text="roiCalBusy ? 'KALIBRASI JALAN (4 mnt)' : 'FULL AUTO (putar+ROI+restart)'">FULL AUTO (putar+ROI+restart)</button>
                     <button @click="testRoiOcr()" :disabled="roiTestBusy"
                             class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded transition"
                             x-text="roiTestBusy ? 'TESTING…' : 'TEST OCR DENGAN ROI INI'"></button>
