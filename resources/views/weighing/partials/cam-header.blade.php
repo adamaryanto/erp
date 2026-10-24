@@ -39,7 +39,8 @@
 <!-- CAMERA PREVIEW + SERVICE CONTROL -->
 <div class="mb-5 bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
     <div class="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between gap-2 flex-wrap">
-        <span class="text-xs text-gray-600">Kamera Pos — pratinjau (refresh tiap 2 detik)</span>
+        @php $previewSec = max(1, min(5, (int) ($settings->cam_preview_sec ?? 2))); @endphp
+        <span class="text-xs text-gray-600">Kamera Pos — pratinjau (refresh tiap {{ $previewSec }} detik)</span>
         <div class="flex items-center gap-2 flex-wrap">
             <span class="text-[10px] font-mono text-gray-400">{{ $settings->cam_snapshot_url ? 'sumber terisi' : 'belum ada URL' }}</span>
             <button @click="captureOcr()" :disabled="ocrRunning"
@@ -84,9 +85,25 @@
         </div>
     </div>
     
-    <!-- PREVIEW SINGLE: Video URL (live) diutamakan, fallback ke Snapshot URL -->
-    @if($settings->cam_stream_url ?? $settings->cam_snapshot_url)
-        <div x-data="camPreview()" x-init="init()" data-url="{{ ($settings->cam_stream_url ?? '') !== '' ? $settings->cam_stream_url : $settings->cam_snapshot_url }}">
+    <!-- PREVIEW SINGLE: Video URL (live) diutamakan, fallback ke Snapshot URL.
+         RTSP/MJPEG dialihkan ke proxy server (/timbang-cam/snapshot) karena
+         browser tidak bisa memutar RTSP langsung. -->
+    @php
+        $camStreamUrl = trim((string) ($settings->cam_stream_url ?? ''));
+        $camSnapUrl = trim((string) ($settings->cam_snapshot_url ?? ''));
+        $camIsStream = fn ($u) => (bool) preg_match('#^rtsp://|mjpe?g|videofeed|videostream|action=stream|nphmotion|getoneshot|\.mjpg\b#i', $u);
+        if ($camStreamUrl !== '' && ! $camIsStream($camStreamUrl)) {
+            $camPreview = $camStreamUrl;            // MJPEG: browser putar langsung
+        } elseif ($camSnapUrl !== '' && ! $camIsStream($camSnapUrl)) {
+            $camPreview = $camSnapUrl;              // JPEG: ambil langsung
+        } elseif ($camSnapUrl !== '' || $camStreamUrl !== '') {
+            $camPreview = route('cam.snapshot');    // RTSP/MJPEG via proxy server
+        } else {
+            $camPreview = '';
+        }
+    @endphp
+    @if($camPreview !== '')
+        <div x-data="camPreview()" x-init="init()" data-url="{{ $camPreview }}" data-sec="{{ $previewSec }}">
             <div class="relative bg-slate-900 h-[420px] flex items-center justify-center overflow-hidden">
                 <img x-show="!failed" :src="src" x-on:load="onLoad()" x-on:error="onError()" alt="Kamera pos timbang" class="max-w-full max-h-full object-contain">
                 <div x-show="!failed && !loaded" class="p-6 text-center text-sm text-slate-300">
@@ -107,7 +124,7 @@
                 <button @click="retry()" class="mt-2 px-4 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700">COBA LAGI</button>
             </div>
             <p class="px-4 py-1.5 text-[11px] text-gray-400 border-t border-gray-100 flex items-center justify-between gap-2">
-                <span x-text="isStream ? 'Mode: stream langsung (tanpa refresh)' : 'Mode: snapshot (refresh tiap 2 detik)'"></span>
+                        <span x-text="isStream ? 'Mode: stream langsung (tanpa refresh)' : ('Mode: snapshot (refresh tiap ' + sec + ' detik)')"></span>
                 <button @click="retry()" class="px-2.5 py-1 rounded border border-gray-300 text-gray-600 text-[11px] font-bold hover:bg-gray-50">↻ REFRESH MANUAL</button>
             </p>
         </div>
@@ -116,6 +133,7 @@
                 return {
                     base: '',
                     src: '',
+                    sec: 2,
                     failed: false,
                     failCount: 0,
                     loaded: false,
@@ -131,11 +149,12 @@
                     },
                     init() {
                         this.base = (this.$el && this.$el.dataset && this.$el.dataset.url) ? this.$el.dataset.url : '';
+                        this.sec = parseInt((this.$el && this.$el.dataset && this.$el.dataset.sec) || '2', 10) || 2;
                         this.src = this.base;
                         if (this.timer) { clearInterval(this.timer); this.timer = null; }
                         if (!this.isStream) {
                             this.tick();
-                            this.timer = setInterval(() => this.tick(), 2000);
+                            this.timer = setInterval(() => this.tick(), this.sec * 1000);
                         } else {
                             // Stream MJPEG: paksa koneksi BARU tiap init (query acak
                             // diabaikan server). Tanpa ini, retry dengan src yang sama
@@ -143,7 +162,7 @@
                             this.src = this.base + (this.base.includes('?') ? '&' : '?') + 't=' + Date.now();
                             this.pending = true;
                             this.watchdog(12000);
-                            this.timer = setInterval(() => { this.nowTs = Date.now(); }, 2000);
+                            this.timer = setInterval(() => { this.nowTs = Date.now(); }, this.sec * 1000);
                         }
                         // Tombol START SERVICE → preview ikut refresh + cek ulang kamera.
                         window.addEventListener('cam-retry', () => this.retry());
@@ -216,7 +235,14 @@
                     <label class="text-xs">W: <input type="number" step="0.01" min="0.01" max="1" x-model.number="roiW" class="w-full h-8 border rounded px-2 font-mono text-sm"></label>
                     <label class="text-xs">H: <input type="number" step="0.01" min="0.01" max="1" x-model.number="roiH" class="w-full h-8 border rounded px-2 font-mono text-sm"></label>
                 </div>
-                <p class="text-xs text-gray-500">Contoh: X=0.35 Y=0.30 W=0.30 H=0.20 = area tengah 30% lebar × 20% tinggi</p>
+                <label class="block text-xs font-semibold text-gray-600">Putar Gambar (rotate) — HP miring?</label>
+                <select x-model.number="roiRotate" class="w-full h-9 border rounded px-2 text-sm font-mono">
+                    <option :value="0">0° — normal (HP landscape)</option>
+                    <option :value="90">90° — HP miring kanan</option>
+                    <option :value="180">180° — HP terbalik</option>
+                    <option :value="270">270° — HP miring kiri</option>
+                </select>
+                <p class="text-xs text-gray-500">Putar diterapkan server sebelum OCR. TEST/FULL AUTO/SIMPAN memakai nilai ini. Contoh ROI: X=0.35 Y=0.30 W=0.30 H=0.20 = area tengah 30% lebar × 20% tinggi.</p>
                 <div class="flex gap-2 flex-wrap">
                     <button @click="autoRoi()" :disabled="roiAutoBusy"
                             class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded transition"

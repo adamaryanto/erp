@@ -15,6 +15,16 @@ Contoh jalan:
   python bridge/cam_ocr.py --snapshot-url http://192.168.1.50/snapshot.jpg --station POS-01
   python bridge/cam_ocr.py --snapshot-url http://192.168.1.50/snapshot.jpg --station POS-01 --simulate
   python bridge/cam_ocr.py --snapshot-url http://192.168.1.50/snapshot.jpg --station POS-01 --roi 0.35,0.30,0.30,0.20 --interval 2
+
+RTSP / MJPEG (mis. EZVIZ H3C):
+  URL snapshot boleh berupa stream, bukan cuma JPEG diam. Kalau URL
+  diawali rtsp:// atau berupa MJPEG (kaya "/video.mjpg", "action=stream",
+  "videofeed"), service ambil 1 frame lewat OpenCV (FFMPEG) lalu OCR
+  seperti biasa. RTSP pakai koneksi TCP (lebih andal di WiFi/LAN).
+  Contoh EZVIZ (aktifkan RTSP dulu di app EZVIZ → LAN Live View):
+  python bridge/cam_ocr.py --snapshot-url "rtsp://admin:KODE@192.168.1.50:554/h264/ch1/main/av_stream" --station POS-01
+  python bridge/cam_ocr.py --snapshot-url "http://admin:KODE@192.168.1.50/video.mjpg?q=30&fps=33&id=0.5" --station POS-01
+  Mode pratinjau (tanpa OCR): --grab-only --out pratinjau.jpg
 """
 
 from __future__ import annotations
@@ -95,7 +105,112 @@ def apply_rotate(img_bytes: bytes, deg: int) -> bytes:
     return bytes(buf) if ok else img_bytes
 
 
+# Deteksi URL yang BUKAN JPEG diam tapi butuh ambil frame dari stream.
+# Sengaja spesifik (bukan cuma kata "video") biar URL snapshot JPEG yang
+# kebetulan ada "video" di path-nya tidak salah dikira stream.
+_STREAM_HINT = re.compile(
+    r"^rtsp://|mjpe?g|videofeed|videostream|action=stream|nphmotion|getoneshot|\.mjpg\b",
+    re.I,
+)
+
+# Capture persisten per URL: RTSP itu mahal buka-tutup (handshake 1-2 dtk),
+# jadi koneksi disimpan hidup dan dipakai ulang tiap frame.
+_STREAM_CAPTURES: dict[str, object] = {}
+
+
+def is_stream_url(url: str) -> bool:
+    """True kalau URL berupa stream (RTSP/MJPEG), bukan file JPEG sekali ambil."""
+    return bool(_STREAM_HINT.search(url or ""))
+
+
+def release_stream_captures() -> None:
+    """Tutup semua koneksi stream yang masih hidup (dipanggil saat berhenti)."""
+    for cap in list(_STREAM_CAPTURES.values()):
+        try:
+            cap.release()
+        except Exception:
+            pass
+    _STREAM_CAPTURES.clear()
+
+
+def _grab_stream_frame(url: str, timeout: float = 8.0) -> bytes:
+    """Ambil SATU frame terbaru dari RTSP/MJPEG via OpenCV (FFMPEG).
+
+    Koneksi di-cache supaya frame berikutnya tidak bayar handshake lagi.
+    Kalau read gagal/koneksi putus, capture dibuang supaya frame berikutnya
+    buka ulang dari bersih (auto-reconnect).
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise RuntimeError("opencv belum diinstall (pip install opencv-python) — dibutuhkan untuk RTSP/MJPEG")
+
+    # RTSP di WiFi/LAN jauh lebih andal lewat TCP (UDP sering rontok → frame rusak).
+    # stimeout (mikrodetik) membatasi operasi socket FFMPEG biar tidak nyangkut lama.
+    os.environ.setdefault(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        f"rtsp_transport;tcp|stimeout;{int(timeout * 1_000_000)}",
+    )
+
+    cap = _STREAM_CAPTURES.get(url)
+    if cap is None or not cap.isOpened():
+        ms = int(timeout * 1000)
+        # Timeout HARUS diberikan saat membuka (konstruktor) — set() setelahnya
+        # sudah terlambat karena open sudah blokir. Param ini didukung OpenCV 4.5.3+.
+        try:
+            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, ms,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC, ms,
+            ])
+        except Exception:
+            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        try:
+            # Buffer 1: jangan menimbun frame lama, ambil yang terbaru saja.
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+        if not cap.isOpened():
+            raise RuntimeError(f"tidak bisa buka stream: {url}")
+        _STREAM_CAPTURES[url] = cap
+
+    deadline = time.time() + timeout
+    frame = None
+    while time.time() < deadline:
+        ok, frame = cap.read()
+        if ok and frame is not None and getattr(frame, "size", 0):
+            break
+        frame = None
+        time.sleep(0.05)
+
+    if frame is None:
+        # Koneksi mati/beku: buang biar percobaan berikutnya buka ulang.
+        try:
+            cap.release()
+        except Exception:
+            pass
+        _STREAM_CAPTURES.pop(url, None)
+        raise RuntimeError(f"stream tidak mengirim frame: {url}")
+
+    # Ambil frame yang lebih segar bila tersedia (RTSP menahan 1-2 frame lama).
+    try:
+        if cap.grab():
+            ok2, fresher = cap.retrieve()
+            if ok2 and fresher is not None and getattr(fresher, "size", 0):
+                frame = fresher
+    except Exception:
+        pass
+
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    if not ok:
+        raise RuntimeError("gagal encode frame JPEG")
+    return bytes(buf)
+
+
 def fetch_snapshot(url: str, timeout: float = 8.0) -> bytes:
+    # RTSP/MJPEG: ambil frame lewat OpenCV, bukan GET HTTP (stream tak ada putusnya).
+    if is_stream_url(url):
+        return _grab_stream_frame(url, timeout)
+
     sess = _http_session()
     if sess is None:
         raise RuntimeError("modul 'requests' belum diinstall — jalankan: pip install requests opencv-python numpy easyocr")
@@ -434,6 +549,19 @@ def write_status(path: str, state: str, detail: str = "") -> None:
         pass
 
 
+def write_result(path: str, **fields) -> None:
+    """Tulis hasil kalibrasi (JSON) yang dipoll oleh web (mode async)."""
+    if not path:
+        return
+    fields["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    try:
+        tmp = f"{path}.tmp"
+        Path(tmp).write_text(json.dumps(fields, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -474,22 +602,61 @@ def main() -> int:
                     help="tanpa print ke console (buat daemon dari web; bacaan tetap masuk DB via API)")
     ap.add_argument("--log-file", default="",
                     help="tulis semua log ke file ini (kotak hitam daemon; diputar tiap start bila >1MB)")
+    ap.add_argument("--grab-only", action="store_true",
+                    help="ambil 1 frame (RTSP/MJPEG/JPEG) lalu tulis ke --out, keluar. Tanpa OCR/model (pratinjau web)")
+    ap.add_argument("--out", default="", help="path file JPEG output untuk --grab-only")
+    ap.add_argument("--grab-timeout", type=float, default=8.0,
+                    help="detik maksimum menunggu frame untuk --grab-only")
+    ap.add_argument("--input-file", default="",
+                    help="frame JPEG statis untuk --auto-roi (tanpa buka RTSP lagi; dipakai kalibrasi web)")
+    ap.add_argument("--result-file", default="",
+                    help="tulis hasil --auto-roi ke JSON (state running/done/error) untuk polling web async")
     args = ap.parse_args()
+
+    # Mode GRAB-ONLY: ambil 1 frame untuk pratinjau browser (RTSP tak bisa
+    # diputar browser). Tidak load EasyOCR → cepat & ringan.
+    if args.grab_only:
+        if not args.out:
+            print("GRAB gagal: --out wajib diisi")
+            return 1
+        try:
+            img = fetch_snapshot(args.snapshot_url, timeout=args.grab_timeout)
+            Path(args.out).write_bytes(img)
+        except Exception as e:
+            print(f"GRAB gagal: {e}")
+            return 1
+        print(f"GRAB ok: {args.out} ({len(img)} byte)")
+        return 0
 
     # Mode AUTO ROI: deteksi sekali, cetak, keluar. Tidak menyentuh
     # quiet/log/daemon di bawah (output harus bisa dibaca pemanggil).
     if args.auto_roi:
-        try:
-            img = fetch_snapshot(args.snapshot_url)
-        except Exception as e:
-            print(f"ROI gagal: snapshot: {e}")
-            return 1
+        # Kalau --input-file diisi: pakai frame statis yang sudah diambil
+        # pemanggil (1x konek), jadi deteksi/putar TIDAK buka RTSP lagi.
+        # Menghindari rebutan koneksi kamera (kamera consumer sering cuma
+        # izinkan 1 sesi RTSP) → kalibrasi & pratinjau tidak saling putus.
+        write_result(args.result_file, state="running", detail="Mendeteksi display...")
+        if args.input_file:
+            try:
+                img = Path(args.input_file).read_bytes()
+            except OSError as e:
+                print(f"ROI gagal: baca --input-file: {e}")
+                write_result(args.result_file, state="error", message=f"baca frame: {e}")
+                return 1
+        else:
+            try:
+                img = fetch_snapshot(args.snapshot_url)
+            except Exception as e:
+                print(f"ROI gagal: snapshot: {e}")
+                write_result(args.result_file, state="error", message=f"snapshot: {e}")
+                return 1
         print("[CAM-OCR] Deteksi display full-frame (±10-20 dtk)...", flush=True)
         try:
             get_reader(fast=False)
         except Exception:
             import traceback
             traceback.print_exc()
+            write_result(args.result_file, state="error", message="model EasyOCR gagal dimuat")
             return 3
         if args.try_rotate:
             # Coba semua arah, pemenang = skor grup desimal tertinggi.
@@ -499,6 +666,7 @@ def main() -> int:
                 import numpy as np
             except ImportError:
                 print("ROI gagal: opencv belum diinstall (pip install opencv-python)")
+                write_result(args.result_file, state="error", message="opencv belum diinstall")
                 return 3
             winner = None  # (score, deg, roi, txt)
             for deg in (0, 90, 180, 270):
@@ -524,19 +692,25 @@ def main() -> int:
                     winner = (s[0], deg, roi_d, txt_d)
             if winner is None:
                 print("ROI gagal: tidak ada angka di semua arah putar")
+                write_result(args.result_file, state="error", message="tidak ada angka di semua arah putar")
                 return 2
             _, deg, roi, txt = winner
             print(f"ROI: {roi[0]},{roi[1]},{roi[2]},{roi[3]}")
             print(f"TEXT: {txt}")
             print(f"ROTATE: {deg}")
+            write_result(args.result_file, state="done",
+                         roi=f"{roi[0]},{roi[1]},{roi[2]},{roi[3]}", text=txt, rotate=deg)
             return 0
         img = apply_rotate(img, args.rotate)
         roi, txt = detect_roi(img)
         if roi is None:
             print(f"ROI gagal: {txt}")
+            write_result(args.result_file, state="error", message=txt or "ROI gagal")
             return 2
         print(f"ROI: {roi[0]},{roi[1]},{roi[2]},{roi[3]}")
         print(f"TEXT: {txt}")
+        write_result(args.result_file, state="done",
+                     roi=f"{roi[0]},{roi[1]},{roi[2]},{roi[3]}", text=txt)
         return 0
 
     # Mode daemon senyap: buang print console (pipe PHP tidak dibaca, biar
@@ -615,6 +789,7 @@ def main() -> int:
     while True:
         if args.stop_file and Path(args.stop_file).exists():
             print("[CAM-OCR] Stop diminta dari web, berhenti.")
+            release_stream_captures()
             write_status(args.status_file, "stopped", "Berhenti atas permintaan.")
             if args.pid_file:
                 try:
@@ -655,7 +830,9 @@ def main() -> int:
             if fail_streak == CAMERA_FAIL_AFTER or fail_streak % 30 == 0:
                 write_status(args.status_file, "camera_fail",
                              f"Snapshot gagal {fail_streak}x: {e}. URL={args.snapshot_url}. "
-                             "Kalau EZVIZ: tidak ada /videofeed — aktifkan RTSP / pakai IP Webcam HP.")
+                             "Cek: kamera nyala + satu LAN/WiFi, URL benar, dan (EZVIZ) RTSP sudah "
+                             "diaktifkan di app (LAN Live View → Local Server Settings); "
+                             "password RTSP = kode verifikasi di stiker, bukan password akun.")
             if args.once:
                 return 1
             time.sleep(max(args.interval, 2.0))

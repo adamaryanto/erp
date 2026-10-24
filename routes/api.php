@@ -41,5 +41,6 @@ Route::post('/cam/service/stop', [CamReadingController::class, 'stopService']);
 Route::post('/cam/service/roi', [CamReadingController::class, 'saveRoi']);
 Route::post('/cam/service/auto', [CamReadingController::class, 'setAuto']);
 Route::post('/cam/roi/auto', [CamReadingController::class, 'autoRoi']);
-Route::post('/cam/roi/autocal', [CamReadingController::class, 'autoCalibrate']);
-Route::get('/cam/service/status', [CamReadingController::class, 'serviceStatus']);
+    Route::post('/cam/roi/autocal', [CamReadingController::class, 'autoCalibrate']);
+    Route::get('/cam/roi/status', [CamReadingController::class, 'calibrationStatus']);
+    Route::get('/cam/service/status', [CamReadingController::class, 'serviceStatus']);

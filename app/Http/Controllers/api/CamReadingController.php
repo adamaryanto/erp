@@ -128,6 +128,7 @@ class CamReadingController extends Controller
         $validated = $request->validate([
             'station' => 'nullable|string|max:20',
             'roi' => 'nullable|string|max:50',
+            'rotate' => 'nullable|integer|in:0,90,180,270',
         ]);
 
         $settings = Setting::config();
@@ -142,6 +143,7 @@ class CamReadingController extends Controller
 
         $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
         $roi = $validated['roi'] ?? Setting::config()->cam_roi ?: '0.28,0.38,0.44,0.26';
+        $rotate = (int) ($validated['rotate'] ?? $settings->cam_rotate ?? 0);
 
         // Python Laragon (yg ada easyocr+opencv), fallback ke python biasa.
         $candidates = [
@@ -163,7 +165,7 @@ class CamReadingController extends Controller
             '--station', $station,
             '--api-base', config('app.url'),
             '--roi', $roi,
-            '--rotate', (string) ($settings->cam_rotate ?? 0),
+            '--rotate', (string) $rotate,
             '--once',
             // --fast (recognizer saja, 2-4 dtk): --once full-detect bisa
             // 10-60 dtk CPU dan memblokir php artisan serve (single-thread)
@@ -204,6 +206,245 @@ class CamReadingController extends Controller
             'snapshot_url' => $snapshotUrl,
             'log' => $tail,
         ], $process->isSuccessful() ? 200 : 500);
+    }
+
+    /**
+     * Pratinjau kamera untuk browser. RTSP tidak bisa diputar di <img>,
+     * jadi server ambil 1 frame (cam_ocr.py --grab-only) lalu kirim JPEG.
+     * URL JPEG biasa diarahkan langsung (hemat spawn python).
+     * Dipakai halaman /timbang-cam saat cam_snapshot_url berupa stream.
+     */
+    public function liveSnapshot(Request $request)
+    {
+        $settings = Setting::config();
+        $url = trim((string) $settings->cam_snapshot_url);
+
+        if ($url === '') {
+            return response('Snapshot URL belum diisi di Pengaturan.', 404);
+        }
+
+        // JPEG diam: biarkan browser ambil langsung.
+        if (! $this->isStreamUrl($url)) {
+            return redirect($url);
+        }
+
+        $tmp = storage_path('app/cam_preview_'.md5($url).'.jpg');
+        // Ambang "segar" ikut interval pratinjau (default 2 dtk), minus
+        // sedikit toleransi biar tiap refresh benar-benar ambil frame baru.
+        $previewSec = max(1, min(5, (int) ($settings->cam_preview_sec ?? 2)));
+        $fresh = is_file($tmp) && (time() - (int) filemtime($tmp)) < $previewSec;
+
+        // Kalibrasi ROI sedang jalan: JANGAN buka koneksi RTSP baru. Kamera
+        // consumer (mis. EZVIZ H3C) sering cuma izinkan 1 sesi RTSP — kalau
+        // pratinjau ikut nembak, kalibrasi & pratinjau sama-sama putus.
+        // Cukup sajikan frame terakhir yang sudah ada (beku sesaat).
+        $calibFrame = Cache::get('cam_calibrating');
+        if ($calibFrame) {
+            $serve = is_file($calibFrame) ? $calibFrame : (is_file($tmp) ? $tmp : null);
+            if ($serve) {
+                return response()->file($serve, [
+                    'Content-Type' => 'image/jpeg',
+                    'Cache-Control' => 'no-store, max-age=0',
+                ]);
+            }
+
+            return response('Kalibrasi ROI sedang berjalan…', 503);
+        }
+
+        if (! $fresh) {
+            // Lock: cegah banyak request barengan spawn python bertumpuk.
+            $lock = $tmp.'.lock';
+            $fh = @fopen($lock, 'c');
+            if ($fh && flock($fh, LOCK_EX | LOCK_NB)) {
+                try {
+                    $process = new Process([
+                        $this->pythonBin(),
+                        base_path('bridge/cam_ocr.py'),
+                        '--snapshot-url', $url,
+                        '--grab-only',
+                        '--out', $tmp,
+                        '--grab-timeout', '6',
+                    ], null, [
+                        'SYSTEMROOT' => 'C:\Windows',
+                        'PYTHONHASHSEED' => '0',
+                        'PYTHONWARNINGS' => 'ignore',
+                        'PYTHONIOENCODING' => 'utf-8',
+                        'PATH' => (string) getenv('PATH'),
+                        'TEMP' => (string) (getenv('TEMP') ?: sys_get_temp_dir()),
+                        'USERPROFILE' => (string) (getenv('USERPROFILE') ?: ''),
+                    ]);
+                    $process->setTimeout(20);
+                    $process->run();
+                } catch (\Throwable $e) {
+                    // Abaikan — keberhasilan dicek lewat is_file di bawah.
+                } finally {
+                    flock($fh, LOCK_UN);
+                    fclose($fh);
+                }
+            } elseif ($fh) {
+                fclose($fh);
+            }
+        }
+
+        if (! is_file($tmp)) {
+            return response('Tidak bisa mengambil frame kamera (cek URL/RTSP).', 502);
+        }
+
+        return response()->file($tmp, [
+            'Content-Type' => 'image/jpeg',
+            'Cache-Control' => 'no-store, max-age=0',
+        ]);
+    }
+
+    /**
+     * URL stream (RTSP/MJPEG) — bukan JPEG sekali ambil. Selaras dengan
+     * heuristik di bridge/cam_ocr.py (is_stream_url).
+     */
+    private function isStreamUrl(string $url): bool
+    {
+        return (bool) preg_match('#^rtsp://|mjpe?g|videofeed|videostream|action=stream|nphmotion|getoneshot|\.mjpg\b#i', $url);
+    }
+
+    /**
+     * Python foreground (python.exe) buat proses sekali-jalan (kalibrasi/OCR).
+     * Beda dari pythonBin() yang pakai pythonw (daemon tanpa console).
+     */
+    private function pythonExe(): string
+    {
+        $laragon = 'C:\laragon\bin\python\python-3.10\python.exe';
+
+        return is_file($laragon) ? $laragon : 'python';
+    }
+
+    /** Environment minimal saat spawn python dari konteks web server. */
+    private function bridgeEnv(): array
+    {
+        return [
+            'SYSTEMROOT' => 'C:\Windows',
+            'PYTHONHASHSEED' => '0',
+            'PYTHONWARNINGS' => 'ignore',
+            'PYTHONIOENCODING' => 'utf-8',
+            'PATH' => (string) getenv('PATH'),
+            'TEMP' => (string) (getenv('TEMP') ?: sys_get_temp_dir()),
+            'USERPROFILE' => (string) (getenv('USERPROFILE') ?: ''),
+        ];
+    }
+
+    /**
+     * Ambil 1 frame statis untuk kalibrasi (sekali konek RTSP/MJPEG saja).
+     * OCR berat kemudian kerja di file ini → tidak rebutan sesi RTSP dengan
+     * kamera. Kembalikan path file, atau '' kalau gagal.
+     */
+    private function grabCalibrationFrame(string $snapshotUrl, string $station): string
+    {
+        $safe = strtoupper(preg_replace('/[^A-Z0-9]+/i', '', $station));
+        $out = storage_path('app/cam_calib_'.$safe.'.jpg');
+        @unlink($out);
+
+        try {
+            $process = new Process([
+                $this->pythonExe(),
+                base_path('bridge/cam_ocr.py'),
+                '--snapshot-url', $snapshotUrl,
+                '--grab-only',
+                '--out', $out,
+                '--grab-timeout', '10',
+            ], null, $this->bridgeEnv());
+            $process->setTimeout(30);
+            $process->run();
+        } catch (\Throwable $e) {
+            return '';
+        }
+
+        return (is_file($out) && filesize($out) > 1000) ? $out : '';
+    }
+
+    /** File hasil kalibrasi (JSON) yang ditulis python & dipoll web. */
+    private function calibResultFile(string $station): string
+    {
+        $safe = strtoupper(preg_replace('/[^A-Z0-9]+/i', '', $station));
+
+        return storage_path('app/cam_calib_'.$safe.'.json');
+    }
+
+    /** Kunci cache konteks kalibrasi (biar tahu cara memulihkan service). */
+    private function calibCtxKey(string $station): string
+    {
+        return 'cam_calib_ctx:'.strtoupper($station);
+    }
+
+    /**
+     * Mulai kalibrasi ASYNC: STOP service (hindari rebutan 1 sesi RTSP),
+     * ambil 1 frame statis, lalu spawn deteksi terpisah (hasil ke
+     * --result-file) dan LANGSUNG balas "started". Frontend poll
+     * calibrationStatus() sampai selesai.
+     *
+     * Kenapa async: deteksi 10 dtk–4 mnt kalau ditunggu di request akan
+     * memblokir seluruh server (di php artisan serve single-thread) →
+     * pratinjau/polling ikut ngantre dan kamera tampak "tidak update".
+     */
+    private function startCalibration(string $station, string $snapshotUrl, bool $tryRotate, $settings): JsonResponse
+    {
+        $resultFile = $this->calibResultFile($station);
+        @unlink($resultFile);
+
+        $wasRunning = $this->heartbeatAlive($station);
+        $prevInterval = (float) (Cache::get($this->serviceKey($station))['interval'] ?? ($tryRotate ? 0.2 : 2));
+
+        if ($wasRunning) {
+            $this->stopService(new Request(['station' => $station]));
+            sleep(1); // kasih napas: proses lama mati + sesi RTSP kelepas
+        }
+
+        // 1 frame statis (sekali konek) → pratinjau beku + OCR tak buka RTSP.
+        $frameFile = $this->grabCalibrationFrame($snapshotUrl, $station);
+        if ($frameFile === '') {
+            if ($wasRunning) {
+                $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Gagal ambil frame dari kamera. Cek jaringan/URL (RTSP/MJPEG).',
+            ], 502);
+        }
+
+        Cache::put('cam_calibrating', $frameFile, 900);
+        Cache::put($this->calibCtxKey($station), [
+            'mode' => $tryRotate ? 'autocal' : 'roi',
+            'was_running' => $wasRunning,
+            'prev_interval' => $prevInterval,
+        ], 1800);
+
+        $args = array_merge(
+            ['C:\Windows\System32\cmd.exe', '/c', 'start', '/B', '',
+                $this->pythonBin(), base_path('bridge/cam_ocr.py')],
+            ['--snapshot-url', $snapshotUrl,
+                '--station', $station,
+                '--rotate', (string) ($settings->cam_rotate ?? 0),
+                '--auto-roi',
+                '--input-file', $frameFile,
+                '--result-file', $resultFile]
+        );
+        if ($tryRotate) {
+            $args[] = '--try-rotate';
+        }
+
+        try {
+            $proc = new Process($args, null, $this->bridgeEnv());
+            $proc->setTimeout(30);
+            $proc->run();
+        } catch (\Throwable $e) {
+            Cache::forget('cam_calibrating');
+            Cache::forget($this->calibCtxKey($station));
+            if ($wasRunning) {
+                $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
+            }
+
+            return response()->json(['status' => 'error', 'message' => 'Gagal spawn kalibrasi: '.$e->getMessage()], 500);
+        }
+
+        return response()->json(['status' => 'started', 'station' => $station]);
     }
 
     /**
@@ -443,9 +684,9 @@ class CamReadingController extends Controller
     }
 
     /**
-     * AUTO ROI: deteksi area display otomatis via EasyOCR full-frame.
-     * Jalan sekali (±10-30 dtk), hasilnya DIKEMBALIKAN (tidak langsung
-     * disimpan) supaya operator bisa TEST dulu di modal baru SIMPAN.
+     * AUTO ROI (async): mulai deteksi, balas "started". Frontend poll
+     * calibrationStatus() lalu isi form (tidak langsung disimpan) supaya
+     * operator bisa TEST dulu di modal baru SIMPAN.
      */
     public function autoRoi(Request $request): JsonResponse
     {
@@ -465,74 +706,13 @@ class CamReadingController extends Controller
 
         $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
 
-        $candidates = [
-            'C:\laragon\bin\python\python-3.10\python.exe',
-            'python',
-        ];
-        $python = null;
-        foreach ($candidates as $c) {
-            if ($c === 'python' || is_file($c)) {
-                $python = $c;
-                break;
-            }
-        }
-
-        $process = new Process([
-            $python,
-            base_path('bridge/cam_ocr.py'),
-            '--snapshot-url', $snapshotUrl,
-            '--station', $station,
-            '--rotate', (string) ($settings->cam_rotate ?? 0),
-            '--auto-roi',
-        ], null, [
-            'SYSTEMROOT' => 'C:\Windows',
-            'PYTHONHASHSEED' => '0',
-            'PYTHONWARNINGS' => 'ignore',
-            'PYTHONIOENCODING' => 'utf-8',
-            'PATH' => (string) getenv('PATH'),
-            'TEMP' => (string) (getenv('TEMP') ?: sys_get_temp_dir()),
-            'USERPROFILE' => (string) (getenv('USERPROFILE') ?: ''),
-        ]);
-        $process->setTimeout(180);
-        set_time_limit(200);
-        $process->run();
-
-        $output = trim($process->getOutput()."\n".$process->getErrorOutput());
-        $roi = null;
-        $text = null;
-        if (preg_match('/^ROI:\s*([0-9.,]+)/mi', $output, $m)) {
-            $roi = trim($m[1]);
-        }
-        if (preg_match('/^TEXT:\s*(.+)$/mi', $output, $m)) {
-            $text = trim($m[1]);
-        }
-
-        $lines = array_values(array_filter(explode("\n", $output)));
-        $tail = implode("\n", array_slice($lines, -6));
-
-        if (! $process->isSuccessful() || $roi === null) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Deteksi gagal. Pastikan kamera menghadap display berisi angka.',
-                'station' => $station,
-                'log' => $tail,
-            ], 500);
-        }
-
-        return response()->json([
-            'status' => 'done',
-            'station' => $station,
-            'roi' => $roi,
-            'text' => $text,
-            'log' => $tail,
-        ]);
+        return $this->startCalibration($station, $snapshotUrl, false, $settings);
     }
 
     /**
-     * KALIBRASI FULL-MANDIRI 1 klik: STOP service (biar RAM lega) → coba
-     * putar 0/90/180/270 → arah terbaik menang → SIMPAN ROI + Putar ke
-     * Pengaturan → START lagi bila sebelumnya jalan. Operator tinggal
-     * geser kamera terus klik 1 tombol.
+     * KALIBRASI FULL-MANDIRI 1 klik (async): mulai deteksi 4 arah, balas
+     * "started". Penyelesaian (SIMPAN ROI+Putar, START lagi bila sebelumnya
+     * jalan) ditangani calibrationStatus() di poll berikutnya.
      */
     public function autoCalibrate(Request $request): JsonResponse
     {
@@ -552,108 +732,94 @@ class CamReadingController extends Controller
 
         $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
 
-        // Ingat kondisi sebelum kalibrasi biar dikembalikan seperti semula.
-        $wasRunning = $this->heartbeatAlive($station);
-        $prevInfo = Cache::get($this->serviceKey($station), []);
-        $prevInterval = (float) ($prevInfo['interval'] ?? 0.2);
-
-        if ($wasRunning) {
-            $this->stopService(new Request(['station' => $station]));
-            sleep(2); // kasih napas: proses lama mati + RAM kelepas
-        }
-
-        $candidates = [
-            'C:\laragon\bin\python\python-3.10\python.exe',
-            'python',
-        ];
-        $python = null;
-        foreach ($candidates as $c) {
-            if ($c === 'python' || is_file($c)) {
-                $python = $c;
-                break;
-            }
-        }
-
-        $process = new Process([
-            $python,
-            base_path('bridge/cam_ocr.py'),
-            '--snapshot-url', $snapshotUrl,
-            '--station', $station,
-            '--auto-roi',
-            '--try-rotate',
-        ], null, [
-            'SYSTEMROOT' => 'C:\Windows',
-            'PYTHONHASHSEED' => '0',
-            'PYTHONWARNINGS' => 'ignore',
-            'PYTHONIOENCODING' => 'utf-8',
-            'PATH' => (string) getenv('PATH'),
-            'TEMP' => (string) (getenv('TEMP') ?: sys_get_temp_dir()),
-            'USERPROFILE' => (string) (getenv('USERPROFILE') ?: ''),
-        ]);
-        // 4 arah × (load model sekali + infer): bisa 2-4 menit.
-        $process->setTimeout(420);
-        set_time_limit(450);
-        $process->run();
-
-        $output = trim($process->getOutput()."\n".$process->getErrorOutput());
-        $roi = null;
-        $text = null;
-        $rotate = null;
-        if (preg_match('/^ROI:\s*([0-9.,]+)/mi', $output, $m)) {
-            $roi = trim($m[1]);
-        }
-        if (preg_match('/^TEXT:\s*(.+)$/mi', $output, $m)) {
-            $text = trim($m[1]);
-        }
-        if (preg_match('/^ROTATE:\s*(\d+)/mi', $output, $m)) {
-            $rotate = (int) $m[1];
-        }
-
-        $lines = array_values(array_filter(explode("\n", $output)));
-        $tail = implode("\n", array_slice($lines, -8));
-
-        if (! $process->isSuccessful() || $roi === null || $rotate === null) {
-            // Gagal: kembalikan service seperti semula biar tidak mati suri.
-            if ($wasRunning) {
-                $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
-            }
-
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Deteksi gagal di semua arah. Pastikan kamera menghadap display berisi angka.',
-                'station' => $station,
-                'log' => $tail,
-            ], 500);
-        }
-
-        // Menang → simpan Putar + ROI ke Pengaturan.
-        $settings->update(['cam_rotate' => $rotate, 'cam_roi' => $roi]);
-
-        $restarted = false;
-        if ($wasRunning) {
-            $resp = $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
-            $restarted = ($resp->getData(true)['status'] ?? '') !== 'error';
-        }
-
-        return response()->json([
-            'status' => 'done',
-            'station' => $station,
-            'roi' => $roi,
-            'rotate' => $rotate,
-            'text' => $text,
-            'was_running' => $wasRunning,
-            'restarted' => $restarted,
-            'log' => $tail,
-        ]);
+        return $this->startCalibration($station, $snapshotUrl, true, $settings);
     }
 
     /**
-     * Simpan ROI hasil kalibrasi modal (format "x,y,w,h" fraksi 0-1).
+     * Poll hasil kalibrasi async. Saat selesai: hentikan jeda pratinjau,
+     * (FULL AUTO) simpan ROI+Putar, lalu pulihkan service bila sebelumnya
+     * jalan — semua DI SINI (bukan di request kalibrasi) supaya tak ada
+     * request panjang yang memblokir server.
+     */
+    public function calibrationStatus(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['station' => 'nullable|string|max:20']);
+        $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
+
+        $resultFile = $this->calibResultFile($station);
+        $ctx = Cache::get($this->calibCtxKey($station), []);
+
+        if (! is_file($resultFile)) {
+            // Belum ada hasil: masih menyiapkan kalau flag jeda masih ada.
+            return response()->json([
+                'status' => Cache::has('cam_calibrating') ? 'running' : 'idle',
+                'station' => $station,
+            ]);
+        }
+
+        $data = json_decode((string) @file_get_contents($resultFile), true);
+        if (! is_array($data)) {
+            return response()->json(['status' => 'running', 'station' => $station]);
+        }
+
+        $state = $data['state'] ?? 'running';
+
+        // Anti-macet: "running" kelamaan (>12 mnt) dianggap gagal.
+        if ($state === 'running') {
+            if (time() - (int) @filemtime($resultFile) > 720) {
+                $state = 'error';
+                $data['message'] = $data['message'] ?? 'Kalibrasi timeout (proses macet).';
+            } else {
+                return response()->json(['status' => 'running', 'station' => $station, 'detail' => $data['detail'] ?? '']);
+            }
+        }
+
+        // Selesai (done/error) → finalisasi SEKALI (guard 60 dtk).
+        $guard = 'cam_calib_done:'.strtoupper($station);
+        if (Cache::add($guard, true, 60)) {
+            Cache::forget('cam_calibrating');
+            $wasRunning = (bool) ($ctx['was_running'] ?? false);
+            $prevInterval = (float) ($ctx['prev_interval'] ?? 2);
+
+            if ($state === 'done' && ($ctx['mode'] ?? 'roi') === 'autocal'
+                && isset($data['roi'], $data['rotate'])) {
+                Setting::config()->update([
+                    'cam_rotate' => (int) $data['rotate'],
+                    'cam_roi' => (string) $data['roi'],
+                ]);
+            }
+
+            $restarted = false;
+            if ($wasRunning) {
+                $resp = $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
+                $restarted = ($resp->getData(true)['status'] ?? '') !== 'error';
+            }
+            $data['was_running'] = $wasRunning;
+            $data['restarted'] = $restarted;
+            Cache::forget($this->calibCtxKey($station));
+        }
+
+        if ($state === 'done') {
+            return response()->json(['status' => 'done', 'station' => $station] + $data);
+        }
+
+        return response()->json([
+            'status' => 'error',
+            'station' => $station,
+            'message' => $data['message'] ?? 'Deteksi gagal. Pastikan kamera menghadap display berisi angka.',
+        ] + $data);
+    }
+
+    /**
+     * Simpan ROI + Putar hasil kalibrasi modal (format "x,y,w,h" fraksi 0-1).
+     * Kalau service sedang jalan, di-STOP+START ulang biar setting baru
+     * langsung dipakai daemon (tanpa operator restart manual).
      */    public function saveRoi(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'station' => 'nullable|string|max:20',
             'roi' => 'required|string|max:50',
+            'rotate' => 'nullable|integer|in:0,90,180,270',
         ]);
 
         $parts = array_map('floatval', explode(',', $validated['roi']));
@@ -661,10 +827,30 @@ class CamReadingController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Format ROI: x,y,w,h (contoh 0.28,0.38,0.44,0.26)'], 422);
         }
 
+        $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
         $settings = Setting::config();
-        $settings->update(['cam_roi' => $validated['roi']]);
+        $update = ['cam_roi' => $validated['roi']];
+        if (array_key_exists('rotate', $validated)) {
+            $update['cam_rotate'] = (int) $validated['rotate'];
+        }
+        $settings->update($update);
 
-        return response()->json(['status' => 'saved', 'roi' => $validated['roi']]);
+        // Terapkan ke daemon yang sedang jalan (stop + start = pakai setting baru).
+        $restarted = false;
+        if ($this->heartbeatAlive($station)) {
+            $prevInterval = (float) (Cache::get($this->serviceKey($station))['interval'] ?? 2);
+            $this->stopService(new Request(['station' => $station]));
+            sleep(1);
+            $resp = $this->startService(new Request(['station' => $station, 'interval' => $prevInterval]));
+            $restarted = ($resp->getData(true)['status'] ?? '') !== 'error';
+        }
+
+        return response()->json([
+            'status' => 'saved',
+            'roi' => $validated['roi'],
+            'rotate' => (int) ($update['cam_rotate'] ?? ($settings->cam_rotate ?? 0)),
+            'restarted' => $restarted,
+        ]);
     }
 
     /**
@@ -750,6 +936,8 @@ class CamReadingController extends Controller
             'fresh' => $lastAge !== null && $lastAge <= 10,
             // ROI tersimpan (biar modal kalibrasi kebuka langsung isi nilai server).
             'roi' => Setting::config()->cam_roi,
+            // Putar tersimpan (buat dropdown di modal kalibrasi).
+            'rotate' => (int) (Setting::config()->cam_rotate ?? 0),
             // Debug: teks mentah terakhir yg dilihat OCR (termasuk yg gagal).
             'last_raw' => Cache::get("cam_debug:{$stationCode}")['raw'] ?? null,
             // Diagnosa mandiri service (ditulis cam_ocr.py --status-file).

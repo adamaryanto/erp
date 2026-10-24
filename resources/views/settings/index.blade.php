@@ -209,15 +209,15 @@
         <div class="bg-white rounded-lg shadow p-6">
             <h2 class="text-lg text-gray-900 mb-4">Kamera Pos Timbang</h2>
             <div>
-                <label class="block text-sm text-gray-700">Snapshot URL (MJPEG/snapshot IP cam)</label>
-                <input type="text" name="cam_snapshot_url" value="{{ $settings->cam_snapshot_url }}" placeholder="cth: http://192.168.1.50/shot.jpg" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-xs">
-                <p class="text-gray-600 text-xs mt-2">Dipakai service OCR (wajib JPEG/snapshot, BUKAN video stream).</p>
+                <label class="block text-sm text-gray-700">Snapshot / Stream URL kamera (sumber OCR)</label>
+                <input type="text" name="cam_snapshot_url" value="{{ $settings->cam_snapshot_url }}" placeholder="JPEG: http://192.168.1.50/shot.jpg — atau RTSP: rtsp://admin:KODE@192.168.1.50:554/h264/ch1/main/av_stream" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-xs">
+                <p class="text-gray-600 text-xs mt-2">Boleh JPEG/snapshot, MJPEG, atau <b>RTSP</b> (mis. EZVIZ H3C). Untuk RTSP: aktifkan dulu di app EZVIZ → LAN Live View → Local Server Settings; user <span class="font-mono">admin</span>, password = kode verifikasi di stiker (bukan password akun).</p>
                 @error('cam_snapshot_url') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
             </div>
             <div>
                 <label class="block text-sm text-gray-700">Video URL (live MJPEG, khusus pratinjau)</label>
                 <input type="text" name="cam_stream_url" value="{{ $settings->cam_stream_url ?? '' }}" placeholder="cth: http://192.168.1.50:8080/videofeed" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono text-xs">
-                <p class="text-gray-600 text-xs mt-2">Pratinjau jadi video live tanpa refresh. Kosongkan = pakai Snapshot URL (refresh 2 detik).</p>
+                <p class="text-gray-600 text-xs mt-2">Pratinjau live tanpa refresh (isi URL MJPEG, mis. <span class="font-mono">http://ip/video.mjpg</span>). Kosongkan = pakai Snapshot/Stream URL (refresh 2 detik; RTSP otomatis lewat proxy server).</p>
                 @error('cam_stream_url') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
             </div>
             <div>
@@ -230,6 +230,16 @@
                 </select>
                 <p class="text-gray-600 text-xs mt-2">Kalau HP miring, gambar diputar balik oleh server sebelum OCR — ROI & kalibrasi tetap dalam posisi tegak. Ganti ini → STOP + START ulang service.</p>
                 @error('cam_rotate') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
+            </div>
+            <div>
+                <label class="block text-sm text-gray-700">Interval Pratinjau (detik)</label>
+                <select name="cam_preview_sec" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    @foreach([1, 2, 3, 4, 5] as $sec)
+                        <option value="{{ $sec }}" @selected((int) ($settings->cam_preview_sec ?? 2) === $sec)>{{ $sec }} detik</option>
+                    @endforeach
+                </select>
+                <p class="text-gray-600 text-xs mt-2">Seberapa sering pratinjau refresh. <strong>1 dtk</strong> = paling cepat, tapi untuk kamera <strong>RTSP/CCTV</strong> lebih berat (tiap refresh buka sesi & tunggu keyframe) — kalau patah-patah/lag, balikkan ke 2. Untuk kamera <strong>JPEG snapshot</strong>, 1 dtk aman.</p>
+                @error('cam_preview_sec') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
             </div>
             <div>
                 <label class="block text-sm text-gray-700">Batas keyakinan OCR (0–1)</label>

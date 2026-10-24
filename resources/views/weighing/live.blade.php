@@ -255,6 +255,7 @@
                 roiY: 0.50,
                 roiW: 0.29,
                 roiH: 0.16,
+                roiRotate: 0,
                 roiSnapBusy: false,
                 roiTestBusy: false,
                 roiAutoBusy: false,
@@ -782,6 +783,9 @@
                                 [this.roiX, this.roiY, this.roiW, this.roiH] = p;
                             }
                         }
+                        if (data.rotate !== undefined && data.rotate !== null) {
+                            this.roiRotate = Number(data.rotate) || 0;
+                        }
                     } catch (e) {}
                 },
                 async captureRoiSnapshot() {
@@ -794,7 +798,8 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ 
                                 station: this.selectedStation,
-                                roi: `${this.roiX},${this.roiY},${this.roiW},${this.roiH}`
+                                roi: `${this.roiX},${this.roiY},${this.roiW},${this.roiH}`,
+                                rotate: this.roiRotate,
                             }),
                         });
                         const data = await res.json();
@@ -812,18 +817,38 @@
                     }
                     this.roiSnapBusy = false;
                 },
+                // Poll hasil kalibrasi async (server balas 'started' dulu, lalu
+                // deteksi jalan terpisah → tidak memblokir pratinjau/polling).
+                async pollCalibration(maxMs) {
+                    const deadline = Date.now() + (maxMs || 480000);
+                    while (Date.now() < deadline) {
+                        await new Promise(r => setTimeout(r, 2000));
+                        try {
+                            const res = await fetch('/api/cam/roi/status?station=' + encodeURIComponent(this.selectedStation));
+                            const d = await res.json();
+                            if (d.status && d.status !== 'running') return d;
+                        } catch (e) {}
+                    }
+                    return { status: 'error', message: 'Timeout menunggu kalibrasi.' };
+                },
                 async autoRoi() {
                     if (this.roiAutoBusy) return;
                     this.roiAutoBusy = true;
                     this.roiTestResult = 'Mendeteksi display… (jangan tutup modal, ±20 detik)';
                     this.roiTestWeight = null;
                     try {
-                        const res = await fetch('/api/cam/roi/auto', {
+                        const start = await fetch('/api/cam/roi/auto', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ station: this.selectedStation }),
                         });
-                        const data = await res.json();
+                        const sd = await start.json();
+                        if (sd.status !== 'started') {
+                            this.roiTestResult = `Deteksi gagal: ${sd.message || 'tidak bisa mulai'}`;
+                            this.roiAutoBusy = false;
+                            return;
+                        }
+                        const data = await this.pollCalibration(120000);
                         if (data.status === 'done' && data.roi) {
                             const p = String(data.roi).split(',').map(Number);
                             if (p.length === 4 && p.every(Number.isFinite)) {
@@ -832,7 +857,7 @@
                             this.roiTestResult = `AUTO ROI: ${data.roi} (baca: ${data.text || '?'}) → klik TEST OCR, kalau pas klik SIMPAN.`;
                             this.triggerToast('ROI terisi otomatis — TEST dulu baru SIMPAN');
                         } else {
-                            this.roiTestResult = `Deteksi gagal: ${data.message || ''} ${(data.log || '').split('\n').slice(-2).join(' ')}`;
+                            this.roiTestResult = `Deteksi gagal: ${data.message || ''}`;
                         }
                     } catch (e) {
                         this.roiTestResult = `Error: ${e.message}`;
@@ -846,26 +871,31 @@
                     this.roiTestResult = 'Kalibrasi mandiri jalan… JANGAN tutup halaman (±2-4 menit).';
                     this.roiTestWeight = null;
                     try {
-                        const ctl = new AbortController();
-                        const to = setTimeout(() => ctl.abort(), 450000);
-                        const res = await fetch('/api/cam/roi/autocal', {
+                        const start = await fetch('/api/cam/roi/autocal', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ station: this.selectedStation }),
-                            signal: ctl.signal,
                         });
-                        clearTimeout(to);
-                        const data = await res.json();
+                        const sd = await start.json();
+                        if (sd.status !== 'started') {
+                            this.roiTestResult = `Kalibrasi gagal: ${sd.message || 'tidak bisa mulai'}`;
+                            this.roiCalBusy = false;
+                            return;
+                        }
+                        const data = await this.pollCalibration(480000);
                         if (data.status === 'done' && data.roi) {
                             const p = String(data.roi).split(',').map(Number);
                             if (p.length === 4 && p.every(Number.isFinite)) {
                                 [this.roiX, this.roiY, this.roiW, this.roiH] = p;
                             }
+                            if (data.rotate !== undefined && data.rotate !== null) {
+                                this.roiRotate = Number(data.rotate) || 0;
+                            }
                             this.roiTestResult = `FULL AUTO OK: putar ${data.rotate}°, ROI ${data.roi} (baca: ${data.text || '?'})${data.restarted ? ' — service jalan lagi' : (data.was_running ? ' — service GAGAL restart, START manual!' : '')}`;
                             this.triggerToast('Kalibrasi mandiri selesai');
                             this.refreshServiceStatus();
                         } else {
-                            this.roiTestResult = `Kalibrasi gagal: ${data.message || ''} ${(data.log || '').split('\n').slice(-3).join(' ')}`;
+                            this.roiTestResult = `Kalibrasi gagal: ${data.message || ''}`;
                         }
                     } catch (e) {
                         this.roiTestResult = `Error: ${e.message}`;
@@ -881,7 +911,8 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ 
                                 station: this.selectedStation,
-                                roi: `${this.roiX},${this.roiY},${this.roiW},${this.roiH}`
+                                roi: `${this.roiX},${this.roiY},${this.roiW},${this.roiH}`,
+                                rotate: this.roiRotate,
                             }),
                         });
                         const data = await res.json();
@@ -909,13 +940,15 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ 
                                 station: this.selectedStation,
-                                roi: `${this.roiX},${this.roiY},${this.roiW},${this.roiH}`
+                                roi: `${this.roiX},${this.roiY},${this.roiW},${this.roiH}`,
+                                rotate: this.roiRotate,
                             }),
                         });
                         const data = await res.json();
                         if (data.status === 'saved') {
-                            this.triggerToast(`ROI disimpan: ${this.roiX.toFixed(2)},${this.roiY.toFixed(2)},${this.roiW.toFixed(2)},${this.roiH.toFixed(2)}`);
+                            this.triggerToast(`ROI+Putar disimpan: ${this.roiX.toFixed(2)},${this.roiY.toFixed(2)},${this.roiW.toFixed(2)},${this.roiH.toFixed(2)} / ${data.rotate}°${data.restarted ? ' — service restart otomatis' : ''}`);
                             this.roiCalibrateOpen = false;
+                            this.refreshServiceStatus();
                         } else {
                             this.triggerToast(`Gagal simpan ROI: ${data.message || 'unknown'}`);
                         }

@@ -51,6 +51,7 @@ class SettingsController extends Controller
             'cam_snapshot_url' => 'nullable|string|max:500',
             'cam_stream_url' => 'nullable|string|max:500',
             'cam_rotate' => 'nullable|integer|in:0,90,180,270',
+            'cam_preview_sec' => 'nullable|integer|min:1|max:5',
             'ocr_min_conf' => 'nullable|numeric|min:0|max:1',
         ]);
 
