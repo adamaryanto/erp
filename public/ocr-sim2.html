@@ -3,20 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OCR Test 2 - Font Arial Black</title>
+<title>OCR Test 2 - 7-Segment (Video)</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #000; color: #00FF88; font-family: 'Courier New', monospace;
+  body { background: #000; color: #00FF00; font-family: 'Courier New', monospace;
          height: 100vh; display: flex; align-items: center; justify-content: center; }
   .display { text-align: center; }
-  .angka { font-size: 12vw; font-weight: 900; font-family: Arial, Helvetica, sans-serif; letter-spacing: 0.02em;
-           text-shadow: 0 0 8px rgba(0,255,136,.8); }
-           text-shadow: 0 0 12px rgba(0,255,136,.6); }
-  .satuan { font-size: 6vw; color: #00cc6a; }
+  /* Display 7-segment seperti timbangan di video: digit hijau terang di
+     latar gelap, segmen yang mati tetap kelihatan sangat redup (efek
+     "888" samar di video). Tanpa font eksternal, jadi file ini tetap
+     jalan offline baik dibuka lewat file:// maupun Laragon. */
+  .seg-display { display: flex; align-items: flex-start; justify-content: center; }
+  .digit { position: relative; width: clamp(44px, 7vw, 84px); height: clamp(80px, 12.5vw, 150px);
+           margin: 0 clamp(2px, 0.4vw, 6px); flex: none; }
+  .seg { position: absolute; background: rgba(0, 255, 0, 0.08); }
+  .seg.on { background: #00FF00;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.9), 0 0 22px rgba(0, 255, 0, 0.45); }
+  .seg.a { top: 0; left: 12%; width: 76%; height: 11%;
+           clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
+  .seg.g { top: 44.5%; left: 12%; width: 76%; height: 11%;
+           clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
+  .seg.d { top: 89%; left: 12%; width: 76%; height: 11%;
+           clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
+  .seg.f { top: 7%; left: 0; width: 14%; height: 38%;
+           clip-path: polygon(50% 0, 100% 12%, 100% 88%, 50% 100%, 0 88%, 0 12%); }
+  .seg.b { top: 7%; left: 86%; width: 14%; height: 38%;
+           clip-path: polygon(50% 0, 100% 12%, 100% 88%, 50% 100%, 0 88%, 0 12%); }
+  .seg.e { top: 55%; left: 0; width: 14%; height: 38%;
+           clip-path: polygon(50% 0, 100% 12%, 100% 88%, 50% 100%, 0 88%, 0 12%); }
+  .seg.c { top: 55%; left: 86%; width: 14%; height: 38%;
+           clip-path: polygon(50% 0, 100% 12%, 100% 88%, 50% 100%, 0 88%, 0 12%); }
+  .dot { width: clamp(10px, 1.4vw, 16px); height: clamp(10px, 1.4vw, 16px); border-radius: 50%;
+         background: rgba(0, 255, 0, 0.08); align-self: flex-end;
+         margin: 0 clamp(2px, 0.4vw, 6px) clamp(4px, 0.8vw, 10px); flex: none; }
+  .dot.on { background: #00FF00; box-shadow: 0 0 10px rgba(0, 255, 0, 0.9); }
+  .satuan { font-size: 6vw; color: #00cc6a; font-family: sans-serif; font-weight: bold; }
   .fase { position: fixed; top: 14px; width: 100%; text-align: center;
           font-size: 20px; font-family: sans-serif; font-weight: bold; }
   .fase.naik { color: #ffaa00; }
-  .fase.stabil { color: #00FF88; }
+  .fase.stabil { color: #00FF00; }
   .fase.turun { color: #ff5555; }
   .fase.kosong { color: #557755; }
   .hint { position: fixed; bottom: 12px; width: 100%; text-align: center;
@@ -33,16 +58,71 @@
 <body>
   <div class="fase kosong" id="fase">KOSONG — siap keranjang</div>
   <div class="display">
-    <div class="angka" id="angka">0.00</div>
+    <div class="seg-display" id="segDisplay"></div>
     <div class="satuan">kg</div>
   </div>
-  <p class="hint">[sim2 v1] <span id="dbg">tick#0</span> • FULL MANUAL: START = naik+tahan • STOP = turun ke 0, diem sampai START lagi</p>
+  <p class="hint">[sim2 7-seg] <span id="dbg">tick#0</span> • FULL MANUAL: START = naik+tahan • STOP = turun ke 0, diem sampai START lagi</p>
   <div class="ctl">
     <button id="btnStart" onclick="mulai()">▶ START</button>
     <button id="btnStop" onclick="berhenti()">■ STOP</button>
   </div>
   <script>
-    const el = document.getElementById('angka');
+    // Peta segmen 7-segment standar (a=atas, b=kanan-atas, c=kanan-bawah,
+    // d=bawah, e=kiri-bawah, f=kiri-atas, g=tengah). Sama seperti display
+    // fisik di video: segmen mati tetap redup, bukan hilang total.
+    const SEG_MAP = {
+      '0': ['a','b','c','d','e','f'],
+      '1': ['b','c'],
+      '2': ['a','b','g','e','d'],
+      '3': ['a','b','g','c','d'],
+      '4': ['f','g','b','c'],
+      '5': ['a','f','g','c','d'],
+      '6': ['a','f','g','e','c','d'],
+      '7': ['a','b','c'],
+      '8': ['a','b','c','d','e','f','g'],
+      '9': ['a','b','c','d','f','g'],
+      ' ': [],
+      '-': ['g']
+    };
+    const segDisplay = document.getElementById('segDisplay');
+    const digitEls = [];
+    const SEG_NAMES = ['a','b','c','d','e','f','g'];
+    // Slot: puluhan, satuan, titik, persepuluhan, perseratusan.
+    // Puluhan kosong (mis. 0.00) jadi segmen redup semua, seperti "888"
+    // samar di video.
+    ['digit','digit','dot','digit','digit'].forEach(function (kind) {
+      if (kind === 'dot') {
+        const dot = document.createElement('div');
+        dot.className = 'dot on';
+        segDisplay.appendChild(dot);
+        return;
+      }
+      const d = document.createElement('div');
+      d.className = 'digit';
+      const segs = {};
+      SEG_NAMES.forEach(function (name) {
+        const s = document.createElement('div');
+        s.className = 'seg ' + name;
+        d.appendChild(s);
+        segs[name] = s;
+      });
+      segDisplay.appendChild(d);
+      digitEls.push(segs);
+    });
+    function renderSeg(str) {
+      // str selalu format toFixed(2), mis. "24.69" atau "0.00".
+      const parts = String(str).split('.');
+      const intPart = (parts[0] || '0').padStart(2, ' ');
+      const decPart = (parts[1] || '00').padEnd(2, '0').slice(0, 2);
+      const chars = [intPart[0], intPart[1], decPart[0], decPart[1]];
+      chars.forEach(function (ch, i) {
+        const on = SEG_MAP[ch] || [];
+        SEG_NAMES.forEach(function (name) {
+          digitEls[i][name].classList.toggle('on', on.indexOf(name) !== -1);
+        });
+      });
+    }
+
     const faseEl = document.getElementById('fase');
     const D = { naik: 1200, stabil: 5000, turun: 800, kosong: 1200 };
     let target = 20 + Math.random() * 8;
@@ -89,27 +169,34 @@
       if (fase === 'naik' && Date.now() >= tEnd) setFase('stabil');
       if (fase === 'turunkan' && Date.now() >= tEnd) {
         jalan = false;
+        lastV = 0;
         faseEl.textContent = 'BERHENTI — angka dibekukan';
         faseEl.className = 'fase kosong';
       }
-      const el1 = Date.now() - t0;
       let v;
       if (fase === 'naik') {
-        const p = Math.min(1, el1 / D.naik);
-        v = from + (target - from) * p + (Math.random() - 0.5) * 1.2;
+        // Gaya timbangan asli: NAIK itu lompat bertahap acak tiap tick
+        // (keranjang mendarat, berat meloncat 2-6 kg per tick), BUKAN
+        // ramp linear halus seperti versi lama. Sampai target, lalu
+        // fase STABIL yang mengunci ke target.
+        v = Math.min(target, lastV + 2 + Math.random() * 4);
       } else if (fase === 'stabil') {
-        v = target + (Math.random() - 0.5) * 0.04;
+        // STABIL itu diam. Sesekali saja digit terakhir goyang sedikit
+        // (±0,05) seperti ayam gerak di timbangan asli — bukan goyang
+        // terus-menerus tiap tick.
+        v = target;
+        if (Math.random() < 0.25) v = target + (Math.random() - 0.5) * 0.1;
       } else if (fase === 'turun') {
-        const p = Math.min(1, el1 / D.turun);
-        v = from * (1 - p);
+        // TURUN juga lompat bertahap acak, bukan ramp linear.
+        v = Math.max(0, lastV - (2 + Math.random() * 6));
       } else if (fase === 'turunkan') {
-        const p = Math.min(1, el1 / 1000);
-        v = from * (1 - p);
+        v = Math.max(0, lastV - (3 + Math.random() * 5));
       } else {
         v = 0;
       }
-      el.textContent = Math.max(0, v).toFixed(2);
-      lastV = Math.max(0, v);
+      v = Math.max(0, v);
+      renderSeg(v.toFixed(2));
+      lastV = v;
       window.__lastV = lastV;
       var dbg = document.getElementById('dbg');
       if (dbg) dbg.textContent = 'tick#' + window.__tickN + ' fase=' + fase + ' jalan=' + jalan + ' v=' + lastV.toFixed(2);
@@ -126,6 +213,7 @@
     });
     document.getElementById('btnStart').disabled = false;
     document.getElementById('btnStop').disabled = true;
+    renderSeg('0.00');
     setInterval(tick, 150);
   </script>
 </body>

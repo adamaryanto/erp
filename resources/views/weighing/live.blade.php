@@ -192,6 +192,9 @@
         // Cooldown 2 detik tiap habis nangkep: biar tidak langsung sampling
         // lagi di tengah transisi (turun/naik) yang bikin hasil sampah.
         let loopCooldownUntil = 0;
+        // (Debounce kosong dihapus pada revisi aturan "kurang 10 kg":
+        // momen kosong yang singkat / kelewat frame OCR tidak boleh
+        // menggagalkan re-arm. Lihat tickAutoLoop.)
         function liveTimbang() {
             return {
                 dbOrders: @json($openOrders ?? []),
@@ -374,6 +377,14 @@
                 // ya tampil 00.00, biar jelas bedanya "aktif" vs "ada angka".
                 get camDisplayWeight() {
                     if (this.isConnected) return this.liveRawWeight;
+                    // Putus = tampilkan berat backend terakhir, BUKAN 0.
+                    // 0 palsu inilah yang dulu dibaca auto loop sebagai
+                    // "keranjang diangkat" lalu re-arm dan record ulang
+                    // keranjang yang sama, berulang-ulang, padahal
+                    // keranjang tidak pernah bergerak. Hanya kalau belum
+                    // pernah ada berat backend sama sekali, pakai input
+                    // manual, lalu 0 (memang belum ada data).
+                    if (this.backendWeight !== null && this.backendWeight !== undefined) return Number(this.backendWeight);
                     return Number(this.camManualKg) || 0;
                 },
                 get liveBruto() {
@@ -577,13 +588,14 @@
                             this.liveStatus = '—';
                         }
                     } catch (e) {
+                        // Fetch gagal (timeout/abort) = putus, BUKAN kosong.
+                        // Berat terakhir DIPERTAHANKAN, jangan dinolkan:
+                        // menolkan di sini sama saja membuat 0 palsu yang
+                        // dibaca auto loop sebagai "keranjang diangkat".
                         this.backendConnected = false;
-                        this.backendWeight = null;
                         this.pollErr = (e && e.name === 'AbortError') ? 'timeout 10s' : String((e && e.message) || e).slice(0, 80);
                         this.isConnected = false;
                         this.autoStopped = false;
-                        this.liveRawWeight = 0;
-                        this.liveStatus = '—';
                     } finally {
                         clearTimeout(to);
                     }
@@ -1100,14 +1112,35 @@
                 tickAutoLoop() {
                     if (!this.autoLoop || this.isSampling) return;
                     const w = this.effectiveRawWeight;
+                    // Data putus = DIAM, bukan kosong. Kalau tidak connected,
+                    // jangan trigger dan jangan re-arm sama sekali — 0 palsu
+                    // saat putus tidak boleh dibaca sebagai "keranjang
+                    // diangkat". Gate ini yang mencegah duplicate dari
+                    // putus-nyambung; syarat re-arm di bawah hanya berlaku
+                    // untuk data segar.
+                    if (!this.isConnected) return;
                     if (this.autoArmed && w > this.triggerKg && __wStable(w) && Date.now() >= loopCooldownUntil) {
                         this.autoArmed = false;
                         this.startSampling();
                     } else if (!this.autoArmed && !this.showResult
-                        // Re-arm kalau: kosong (diangkat habis) ATAU turun >5 kg
-                        // dari keranjang terakhir (signature nurunin di kerja hectic,
-                        // OCR sering kelewat momen pas 0).
-                        && (w < this.emptyKg || (this.lastBasketW !== null && w < this.lastBasketW - 5))) {
+                        // ATURAN USER ("kurang 10 kg, jalanin lagi"):
+                        // re-arm begitu berat sudah di bawah triggerKg
+                        // (10 kg). Koreksi dari aturan sebelumnya yang
+                        // salah tafsir: aturan lama menuntut kosong <2 kg
+                        // + turun >10 kg dari keranjang terakhir + bertahan
+                        // 1 detik — itu yang bikin keranjang baru tidak
+                        // jalan padahal timbangan sudah sempat 0 lalu naik
+                        // lagi: momen 0 yang singkat, atau 0 yang kelewat
+                        // frame OCR (32 kg -> langsung 33 kg di data),
+                        // tidak pernah memenuhi syarat kosong 1 detik itu.
+                        // Aturan baru ini sengaja responsif: di bawah 10 kg
+                        // = siap keranjang berikutnya, di atas 10 kg +
+                        // stabil = record. Konsekuensi yang disadari user:
+                        // geser sebagian sampai di bawah 10 kg lalu taruh
+                        // lagi keranjang yang sama bisa ke-record lagi —
+                        // itu harga dari tidak mau kehilangan keranjang
+                        // baru yang tukarannya cepat.
+                        && w < this.triggerKg) {
                         this.autoArmed = true;
                         wStableRef = null;
                     }
@@ -1326,19 +1359,23 @@
                 var on = !!d.connected && d.weight !== null && d.weight !== undefined;
                 var hasWeight = d.weight !== null && d.weight !== undefined;
                 var val = hasWeight ? Number(d.weight) : null;
-                if (on) {
+                var age = (d.age_seconds !== null && d.age_seconds !== undefined) ? Number(d.age_seconds) : null;
+                // DUA TINGKAT (koreksi perbaikan sebelumnya): backend bilang
+                // "connected" sampai umur 10 dtk supaya LED tidak dipaksa 0,
+                // tapi itu BUKAN berarti angkanya masih segar. Kasus nyata:
+                // timbangan sudah kosong (preview 0.00) tapi LED masih
+                // menampilkan 9.36 + STABIL di umur 7 dtk — menyesatkan.
+                // Jadi: segar = umur <= 3 dtk -> STABIL. Lewat dari itu,
+                // berat terakhir tetap ditampilkan (bukan ditebak jadi 0),
+                // tapi dengan label DATA BASI dan badge mode, bukan STABIL.
+                // LED tidak bisa tahu timbangan sudah kosong kalau service
+                // belum mengirim angka baru; yang bisa dilakukan hanyalah
+                // jujur bahwa angka ini sudah lama.
+                var fresh = on && age !== null && age <= 3;
+                if (fresh) {
                     __ledSet('ledValue', val.toFixed(2));
                     __ledSet('ledMsg', '');
                 } else if (val !== null) {
-                    // Data basi: TAMPILKAN berat terakhir, jangan paksa 00.00.
-                    // Sebelumnya, 00.00 palsu (basi, berat terakhir disembunyikan)
-                    // dan 00.00 asli (timbangan kosong, data fresh) kelihatan sama
-                    // persis — itulah kenapa LED "stack di 0 lama" padahal berat
-                    // sudah naik: begitu timbangan sempat 0 atau posting baru
-                    // telat, LED dikunci 00.00 sampai posting berikut. Dengan
-                    // ini, berat terakhir tetap kelihatan + label DATA BASI dan
-                    // "update Xs lalu" membedakannya dari 0 asli; begitu posting
-                    // baru masuk, angka langsung update tanpa refresh halaman.
                     __ledSet('ledValue', val.toFixed(2));
                     __ledSet('ledMsg', 'DATA BASI');
                 } else {
@@ -1347,10 +1384,12 @@
                 }
                 __ledSet('ledAge', (d.age_seconds !== null && d.age_seconds !== undefined) ? ('update ' + d.age_seconds + 's lalu') : '');
                 var box = document.getElementById('ledStatus');
-                if (box) box.innerHTML = on ? __BADGE.stabil : (mode === 'cam' ? __BADGE.cam : __BADGE.off);
+                if (box) box.innerHTML = fresh ? __BADGE.stabil : (mode === 'cam' ? __BADGE.cam : __BADGE.off);
                 // Rata-rata per keranjang: tiap angka BARU = 1 keranjang.
                 // netto = bruto − tare (rumus DHK), rata-rata = mean netto.
-                if (on && mode === 'cam') {
+                // Hanya angka segar yang dihitung; angka basi tidak boleh
+                // masuk sebagai "keranjang baru".
+                if (fresh && mode === 'cam') {
                     var tare = __tareKg();
                     var netto = val - tare;
                     if (!window.__rkSamples) window.__rkSamples = [];

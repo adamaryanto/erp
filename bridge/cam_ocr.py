@@ -35,6 +35,11 @@ pacing interval dari awal frame, dan flag --rtsp-url yang kompatibel
 Koreksi perspektif (2026-10-25): bila bacaan pertama gagal/ragu, polygon
 angka di-warp jadi persegi lalu dibaca ulang (--perspective/--no-perspective);
 hasil warp dipakai hanya bila lebih yakin.
+Decoder 7-segmen + auto ROI struktur (2026-10-25, modul sevenseg.py):
+bila EasyOCR gagal/ragu, decoder segmen (nyala/mati per segmen, tahan font
+7-segmen apapun) menyelamatkan bacaan, dan AUTO-TRACK yang gagal lewat
+EasyOCR dicoba ulang lewat kontur struktur (--seven-seg/--no-seven-seg,
+kalibrasi tanpa OCR: --auto-roi-struct). Decoder tidak pernah menebak.
 """
 
 from __future__ import annotations
@@ -54,6 +59,22 @@ except ImportError:
     # Biar service TIDAK mati seketika kalau requests belum diinstall:
     # errornya jelas per-frame + tertulis di status-file, proses tetap hidup.
     requests = None
+
+# Decoder 7-segmen + auto ROI struktur (2026-10-25, lihat sevenseg.py):
+# penyelamat saat EasyOCR gagal membaca font display. Modul terpisah biar
+# logika murninya bisa di-unit-test tanpa opencv; kalau file-nya tidak
+# ikut tercopy ke PC, service tetap jalan dengan EasyOCR saja (plus
+# peringatan sekali saat start, bukan crash).
+try:
+    import sevenseg as _sevenseg
+except ImportError:
+    try:
+        _sevenseg_dir = str(Path(__file__).resolve().parent)
+        if _sevenseg_dir not in sys.path:
+            sys.path.insert(0, _sevenseg_dir)
+        import sevenseg as _sevenseg
+    except ImportError:
+        _sevenseg = None
 
 
 def parse_roi(s: str) -> tuple[float, float, float, float]:
@@ -636,11 +657,39 @@ def _perspective_retry(img_bytes: bytes, roi):
     return val, cf, raw + " [warp-perspektif]"
 
 
-def ocr_weight_fast(img_bytes: bytes, roi, angle: float = 0.0, persp: bool = True) -> tuple[float | None, float, str]:
+def _try_7seg(img_bytes: bytes, roi, angle: float = 0.0):
+    """Decoder 7-segmen sebagai penyelamat -> (angka, conf, raw) atau None.
+
+    Hanya dipanggil saat EasyOCR gagal/ragu (lihat ocr_weight_fast /
+    ocr_weight). Decoder TIDAK pernah menebak: gagal total -> None, dan
+    pemanggil tetap memakai hasil EasyOCR. Marker [7seg] di raw menandai
+    di log bahwa angka ini dari decoder, bukan EasyOCR.
+    """
+    if _sevenseg is None:
+        return None
+    try:
+        val, cf, raw, detail = _sevenseg.decode_roi(img_bytes, roi, angle=angle)
+    except Exception as e:
+        print(f"[CAM-OCR] 7seg gagal (exception): {e}", flush=True)
+        return None
+    if val is None:
+        # Kegagalan decoder DITULIS (bukan diam): tanpa baris ini, frame
+        # yang gagal decoder tidak bisa dibedakan dari decoder yang
+        # tidak aktif sama sekali — persis kebingungan diagnosa kemarin.
+        print(f"[CAM-OCR] 7seg gagal: {detail}", flush=True)
+        return None
+    print(f"[CAM-OCR] 7seg rescue: {raw} kg (conf {cf:.2f}) {detail}", flush=True)
+    return val, cf, f"{val:.2f} [7seg]"
+
+
+def ocr_weight_fast(img_bytes: bytes, roi, angle: float = 0.0, persp: bool = True, seven_seg: bool = True) -> tuple[float | None, float, str]:
     """Jalur cepat: crop ROI -> recognizer langsung (tanpa deteksi).
     Bila persp on dan bacaan pertama gagal (None) atau ragu (conf < 0.6),
     coba sekali lagi lewat koreksi perspektif; hasil warp hanya dipakai
-    bila lebih yakin dari bacaan pertama."""
+    bila lebih yakin dari bacaan pertama. Terakhir, bila EasyOCR tetap
+    gagal atau ragu (conf < 0.6), coba decoder 7-segmen; hasilnya dipakai
+    hanya bila decoder yakin (conf >= 0.7) — EasyOCR yang yakin tidak
+    pernah ditimpa decoder."""
     reader = get_reader(fast=True)
     if reader is None:
         return None, 0.0, "easyocr belum diinstall (pip install easyocr)"
@@ -662,10 +711,16 @@ def ocr_weight_fast(img_bytes: bytes, roi, angle: float = 0.0, persp: bool = Tru
             retry = None
         if retry is not None and (val is None or retry[1] > cf):
             return retry
+    # Penyelamat 7-segmen: murah (kontur + ukur segmen, tanpa model), jadi
+    # boleh jalan tiap frame yang gagal/ragu tanpa menambah detik infer.
+    if seven_seg and (val is None or cf < 0.6):
+        rescue = _try_7seg(img_bytes, roi, angle=angle)
+        if rescue is not None and (val is None or rescue[1] >= 0.7):
+            return rescue
     return val, cf, raw
 
 
-def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, persp: bool = True) -> tuple[float | None, float, str]:
+def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, persp: bool = True, seven_seg: bool = True) -> tuple[float | None, float, str]:
     """Kembalikan (angka_kg, confidence 0-1, raw_text).
 
     fast=True: recognizer langsung di crop ROI (2-3 dtk, buat service).
@@ -676,7 +731,7 @@ def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, pe
     bila lebih yakin.
     """
     if fast:
-        return ocr_weight_fast(img_bytes, roi, angle=angle, persp=persp)
+        return ocr_weight_fast(img_bytes, roi, angle=angle, persp=persp, seven_seg=seven_seg)
 
     reader = get_reader(fast=False)
     if reader is None:
@@ -702,6 +757,10 @@ def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, pe
             retry = None
         if retry is not None and (val is None or retry[1] > cf):
             return retry
+    if seven_seg and (val is None or cf < 0.6):
+        rescue = _try_7seg(img_bytes, roi, angle=angle)
+        if rescue is not None and (val is None or rescue[1] >= 0.7):
+            return rescue
     return val, cf, raw
 
 
@@ -1079,6 +1138,8 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="sekali jepret lalu keluar (buat kalibrasi ROI)")
     ap.add_argument("--auto-roi", action="store_true",
                     help="deteksi area display otomatis sekali jalan, cetak ROI lalu keluar (buat tombol AUTO ROI)")
+    ap.add_argument("--auto-roi-struct", action="store_true",
+                    help="deteksi area display otomatis berbasis struktur (kontur segmen, TANPA EasyOCR) sekali jalan, cetak ROI lalu keluar — kalibrasi saat font tidak kebaca OCR")
     ap.add_argument("--try-rotate", action="store_true",
                     help="coba putar 0/90/180/270, pakai arah dgn grup desimal terbaik (kalibrasi full-mandiri)")
     ap.add_argument("--fast", action="store_true",
@@ -1104,6 +1165,10 @@ def main() -> int:
                     help="koreksi perspektif: bila bacaan pertama gagal/ragu, warp polygon "
                          "angka jadi persegi lalu baca ulang; hasil warp dipakai hanya bila "
                          "lebih yakin (--no-perspective = matikan, perilaku lama)")
+    ap.add_argument("--seven-seg", action=argparse.BooleanOptionalAction, default=True,
+                    help="decoder 7-segmen + auto ROI struktur sebagai penyelamat saat EasyOCR "
+                         "gagal/ragu (decoder hanya dipakai bila yakin >= 0.7; --no-seven-seg = "
+                         "matikan, perilaku lama EasyOCR saja)")
     ap.add_argument("--stop-file", default="",
                     help="file pemicu berhenti (dibuat oleh tombol STOP di web); loop keluar saat file ada")
     ap.add_argument("--pid-file", default="",
@@ -1149,6 +1214,49 @@ def main() -> int:
             print(f"GRAB gagal: {e}")
             return 1
         print(f"GRAB ok: {args.out} ({len(img)} byte)")
+        return 0
+
+    # Mode AUTO ROI STRUKTUR: seperti --auto-roi tapi tanpa EasyOCR sama
+    # sekali (tidak perlu load model 8-15 dtk). Dipakai kalibrasi saat font
+    # tidak kebaca OCR: kalau mode ini menemukan ROI + angka, decoder
+    # 7-segmen bekerja untuk font itu; kalau hanya ROI tanpa angka, ROI-nya
+    # tetap berguna (font cetak — EasyOCR frame berikutnya yang membaca).
+    if args.auto_roi_struct:
+        write_result(args.result_file, state="running", detail="Mendeteksi display (struktur)...")
+        if args.input_file:
+            try:
+                img = Path(args.input_file).read_bytes()
+            except OSError as e:
+                print(f"ROI struktur gagal: baca --input-file: {e}")
+                write_result(args.result_file, state="error", message=f"baca frame: {e}")
+                return 1
+        else:
+            try:
+                img = fetch_snapshot(source_url)
+            except Exception as e:
+                print(f"ROI struktur gagal: snapshot: {e}")
+                write_result(args.result_file, state="error", message=f"snapshot: {e}")
+                return 1
+        if _sevenseg is None:
+            print("ROI struktur gagal: sevenseg.py tidak ditemukan di folder bridge/")
+            write_result(args.result_file, state="error", message="sevenseg.py tidak ditemukan")
+            return 3
+        img = apply_rotate(img, args.rotate)
+        try:
+            roi, txt, cf, _ang, nd = _sevenseg.detect_roi_struct(img, search_roi=None)
+        except Exception as e:
+            print(f"ROI struktur gagal: {e}")
+            write_result(args.result_file, state="error", message=str(e))
+            return 2
+        if roi is None:
+            print(f"ROI struktur gagal: {txt}")
+            write_result(args.result_file, state="error", message=txt or "ROI struktur gagal")
+            return 2
+        print(f"ROI: {roi[0]},{roi[1]},{roi[2]},{roi[3]}")
+        print(f"TEXT: {txt}")
+        print(f"STRUCT: {nd} digit")
+        write_result(args.result_file, state="done",
+                     roi=f"{roi[0]},{roi[1]},{roi[2]},{roi[3]}", text=txt, method="struct")
         return 0
 
     # Mode AUTO ROI: deteksi sekali, cetak, keluar. Tidak menyentuh
@@ -1257,7 +1365,10 @@ def main() -> int:
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[CAM-OCR] station={station} src={source_url} roi={args.roi} rotate={args.rotate} interval={args.interval}s fast={args.fast} perspective={args.perspective}")
+    sevenseg_ver = getattr(_sevenseg, "__version__", "-") if _sevenseg is not None else "-"
+    print(f"[CAM-OCR] station={station} src={source_url} roi={args.roi} rotate={args.rotate} interval={args.interval}s fast={args.fast} perspective={args.perspective} seven_seg={args.seven_seg} sevenseg_ver={sevenseg_ver}")
+    if args.seven_seg and _sevenseg is None:
+        print("[CAM-OCR] PERINGATAN: decoder 7-seg tidak aktif (sevenseg.py tidak ditemukan di folder bridge/) — hanya EasyOCR yang jalan. Copy sevenseg.py ke folder bridge lalu restart service.")
     print("[CAM-OCR] Kalibrasi: jalankan --once, lihat foto crop, geser --roi sampai display pas.")
     if args.simulate:
         print("[CAM-OCR] SIMULATE: angka acak, tetap POST biar alur API ketest.")
@@ -1406,17 +1517,33 @@ def main() -> int:
                 and (need_track or frames_since_track >= max(5, args.track_every)
                      or ocr_fail_streak >= max(1, args.track_fails))):
             did_track = True
+            struct_ok = False
             try:
                 found, ftxt, _fcf, fang = detect_roi_in_frame(img, search_roi=roi_expand(roi_cur, 0.75))
                 if found is None or not tracking_text_ok(ftxt):
                     found, ftxt, _fcf, fang = detect_roi_in_frame(img, search_roi=None)
+                # Fallback STRUKTUR (tanpa OCR): kalau EasyOCR tidak menemukan
+                # display — persis kasus font tidak kebaca — cari dari kontur
+                # segmen. ROI struktur diterima walau decoder belum membaca
+                # angkanya (font cetak): EasyOCR frame berikutnya yang akan
+                # membacanya dari ROI baru yang sudah pas. Sudut teks TIDAK
+                # diubah oleh jalur ini (tidak ada info sudut dari kontur).
+                if (found is None or not tracking_text_ok(ftxt)) and args.seven_seg and _sevenseg is not None:
+                    s_roi, s_txt, _s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(img, search_roi=roi_expand(roi_cur, 0.75))
+                    if s_roi is None:
+                        s_roi, s_txt, _s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(img, search_roi=None)
+                    if s_roi is not None:
+                        found, ftxt, struct_ok = s_roi, (s_txt if s_txt else f"struktur:{s_nd}digit"), True
+                        print(f"[CAM-OCR] ROI track (struktur, tanpa OCR): {s_roi} baca: {ftxt!r}", flush=True)
                 # Satu digit acak ('1','3','8') bukan display timbangan:
-                # jangan pindahkan ROI (lihat tracking_text_ok).
-                if found is not None and not tracking_text_ok(ftxt):
+                # jangan pindahkan ROI (lihat tracking_text_ok). Pengecualian:
+                # ROI struktur sudah lolos seleksi grup digit di atas.
+                if found is not None and not (tracking_text_ok(ftxt) or struct_ok):
                     found = None
                 if found is not None:
                     smoothed = roi_smooth(roi_cur, found)
-                    roi_angle = roi_angle + (fang - roi_angle) * 0.6
+                    if not struct_ok:
+                        roi_angle = roi_angle + (fang - roi_angle) * 0.6
                     if roi_changed_enough(roi_cur, smoothed):
                         print(f"[CAM-OCR] ROI track: {roi_cur} -> {smoothed} miring {roi_angle:.1f}° (baca: {ftxt!r})", flush=True)
                     roi_cur = smoothed
@@ -1441,9 +1568,43 @@ def main() -> int:
                 weight, conf, raw = round(20 + random.random() * 8, 2), 0.99, "SIMULATE"
             else:
                 t0 = time.time()
-                weight, conf, raw = ocr_weight(img, roi_cur, fast=args.fast, angle=roi_angle, persp=(args.perspective and not did_track))
+                weight, conf, raw = ocr_weight(img, roi_cur, fast=args.fast, angle=roi_angle, persp=(args.perspective and not did_track), seven_seg=args.seven_seg)
                 dt = time.time() - t0
             frames_since_track += 1
+
+            # RESCUE STRUKTUR di frame yang sama (2026-10-25): kalau OCR +
+            # decoder di ROI lama sama-sama gagal, jangan tunggu siklus
+            # tracking berikutnya — cari display dari struktur di frame
+            # INI juga, baca dari ROI baru itu, dan pindahkan ROI kerja
+            # ke sana (dihaluskan seperti tracking) biar frame berikutnya
+            # langsung pakai area baru. Murah (kontur, tanpa model), jadi
+            # boleh jalan tiap frame gagal. Kalau ROI struktur ketemu tapi
+            # decode-nya gagal, ROI tetap dipindah (frame berikutnya
+            # EasyOCR/decoder mencoba dari ROI baru yang sudah pas).
+            if weight is None and not args.simulate and args.seven_seg and _sevenseg is not None:
+                try:
+                    s_roi, s_txt, _s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(img, search_roi=roi_expand(roi_cur, 0.75))
+                    if s_roi is None:
+                        s_roi, s_txt, _s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(img, search_roi=None)
+                    if s_roi is not None:
+                        new_roi = roi_smooth(roi_cur, s_roi)
+                        if roi_changed_enough(roi_cur, new_roi):
+                            print(f"[CAM-OCR] ROI rescue (struktur): {roi_cur} -> {new_roi} (baca: {s_txt!r})", flush=True)
+                        roi_cur = new_roi
+                        if (args.save_roi and roi_changed_enough(roi_saved, roi_cur)
+                                and time.time() - last_roi_save > 60):
+                            if post_roi_save(args.api_base, station, roi_cur):
+                                roi_saved = roi_cur
+                                last_roi_save = time.time()
+                        try:
+                            d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img, s_roi, angle=roi_angle)
+                        except Exception:
+                            d_val = None
+                        if d_val is not None:
+                            weight, conf, raw = d_val, d_cf, f"{d_val:.2f} [7seg-struct]"
+                            print(f"[CAM-OCR] 7seg-struct rescue: {d_raw} kg (conf {d_cf:.2f}) {d_detail}", flush=True)
+                except Exception as e:
+                    print(f"[CAM-OCR] ROI rescue error (lanjut): {e}", flush=True)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             image_path = None
