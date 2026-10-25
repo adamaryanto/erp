@@ -92,8 +92,12 @@
         $camStreamUrl = trim((string) ($settings->cam_stream_url ?? ''));
         $camSnapUrl = trim((string) ($settings->cam_snapshot_url ?? ''));
         $camIsStream = fn ($u) => (bool) preg_match('#^rtsp://|mjpe?g|videofeed|videostream|action=stream|nphmotion|getoneshot|\.mjpg\b#i', $u);
-        if ($camStreamUrl !== '' && ! $camIsStream($camStreamUrl)) {
-            $camPreview = $camStreamUrl;            // MJPEG: browser putar langsung
+        $camIsRtsp = fn ($u) => (bool) preg_match('#^rtsp://#i', $u);
+        if ($camStreamUrl !== '' && ! $camIsRtsp($camStreamUrl)) {
+            // MJPEG (videofeed/action=stream): browser bisa putar LANGSUNG
+            // sebagai <img> hidup. Dulu URL MJPEG malah dibuang ke cabang
+            // proxy lalu jatuh ke snapshot JPEG 2 dtk → pratinjau "patah-patah".
+            $camPreview = $camStreamUrl;
         } elseif ($camSnapUrl !== '' && ! $camIsStream($camSnapUrl)) {
             $camPreview = $camSnapUrl;              // JPEG: ambil langsung
         } elseif ($camSnapUrl !== '' || $camStreamUrl !== '') {

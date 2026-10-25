@@ -25,6 +25,16 @@ RTSP / MJPEG (mis. EZVIZ H3C):
   python bridge/cam_ocr.py --snapshot-url "rtsp://admin:KODE@192.168.1.50:554/h264/ch1/main/av_stream" --station POS-01
   python bridge/cam_ocr.py --snapshot-url "http://admin:KODE@192.168.1.50/video.mjpg?q=30&fps=33&id=0.5" --station POS-01
   Mode pratinjau (tanpa OCR): --grab-only --out pratinjau.jpg
+
+Gabungan (merge 2026-10-25): file ini = versi remote fee6887 + fitur
+lokal yang di-port: AUTO-TRACK ROI di loop daemon (cari display sendiri,
+lacak ulang berkala / saat gagal baca, simpan ROI ke server), preprocessing
+adaptif (skala dari tinggi crop, deskew miring, normalisasi polaritas),
+pacing interval dari awal frame, dan flag --rtsp-url yang kompatibel
+(dipakai sebagai URL sumber; deteksi stream remote yang menanganinya).
+Koreksi perspektif (2026-10-25): bila bacaan pertama gagal/ragu, polygon
+angka di-warp jadi persegi lalu dibaca ulang (--perspective/--no-perspective);
+hasil warp dipakai hanya bila lebih yakin.
 """
 
 from __future__ import annotations
@@ -221,8 +231,34 @@ def fetch_snapshot(url: str, timeout: float = 8.0) -> bytes:
     return r.content
 
 
-def preprocess_for_ocr(img_bytes: bytes, roi: tuple[float, float, float, float], scale: float = 2.5):
-    """Crop ROI display + perbesar + threshold. Butuh opencv+numpy (opsional)."""
+def adaptive_scale(crop_h: int, crop_w: int, target_h: int = 96, max_w: int = 900) -> float:
+    """Skala perbesaran menurut ukuran crop ASLI (jarak kamera tidak relevan).
+
+    Display jauh/kecil -> crop mungil -> diperbesar banyak (maks 4x);
+    display dekat/besar -> apa adanya. Lebar hasil dibatasi biar infer
+    tidak makin berat. (Port dari versi lokal.)
+    """
+    if crop_h <= 0 or crop_w <= 0:
+        return 1.0
+    s = target_h / crop_h
+    s = max(1.0, min(4.0, s))
+    if crop_w * s > max_w:
+        s = max(0.5, max_w / crop_w)
+    return s
+
+
+def preprocess_for_ocr(img_bytes: bytes, roi: tuple[float, float, float, float], scale: float | None = None,
+                       angle: float = 0.0):
+    """Crop ROI display + luruskan miring + perbesar adaptif + threshold.
+
+    scale=None (bawaan): skala dihitung dari tinggi crop (adaptive_scale),
+    jadi ukuran font/jarak kamera berubah pun digit hasil crop berukuran
+    mirip terus. angle = kemiringan teks dari tracking (derajat): crop
+    diputar balik sebelum dibaca, jadi kamera roll tetap kebaca.
+    Polaritas dinormalkan: latar dibuat putih, digit gelap (format yang
+    paling dikenali recognizer). (Port dari versi lokal; menggantikan
+    skala tetap 2.5 versi remote.)
+    """
     try:
         import cv2
         import numpy as np
@@ -238,10 +274,29 @@ def preprocess_for_ocr(img_bytes: bytes, roi: tuple[float, float, float, float],
     x0, y0 = int(x * W), int(y * H)
     x1, y1 = int((x + w) * W), int((y + h) * H)
     crop = img[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    if abs(angle) >= 1.5:
+        # Deskew: putar balik sebesar sudut teks (tanda dibalik, koordinat
+        # gambar y-ke-bawah). Pinggir di-replicate biar sudut buatan tidak
+        # ikut ke-threshold sebagai digit palsu.
+        ch, cw = gray.shape[:2]
+        M = cv2.getRotationMatrix2D((cw / 2, ch / 2), angle, 1.0)
+        gray = cv2.warpAffine(gray, M, (cw, ch), flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+    if scale is None:
+        scale = adaptive_scale(gray.shape[0], gray.shape[1])
+    if scale != 1.0:
+        interp = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=interp)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Polaritas: tepi gambar = latar display. Kalau latar gelap (LED terang
+    # di atas hitam), balik jadi digit gelap di atas putih.
+    border = np.concatenate([th[0, :], th[-1, :], th[:, 0], th[:, -1]])
+    if border.size and float(border.mean()) < 127:
+        th = 255 - th
     return th
 
 
@@ -328,18 +383,170 @@ def pick_number(texts: list[tuple[str, float]]) -> tuple[float | None, float, st
     return best[0], best[1], raw_all
 
 
-def ocr_weight_fast(img_bytes: bytes, roi) -> tuple[float | None, float, str]:
-    """Jalur cepat: crop ROI -> recognizer langsung (tanpa deteksi)."""
-    reader = get_reader(fast=True)
-    if reader is None:
-        return None, 0.0, "easyocr belum diinstall (pip install easyocr)"
-    crop = preprocess_for_ocr(img_bytes, roi, scale=1.0)
-    if crop is None:
-        return None, 0.0, "gagal crop (opencv hilang?)"
+# --- KOREKSI PERSPEKTIF (2026-10-25, kasus Ezviz H3c miring) ---
+# Masalahnya: kamera melihat layar dari samping -> layar jadi trapesium,
+# angka ikut miring/shear. Deskew lama hanya menangani miring kecil (roll),
+# bukan trapesium. Solusinya di sini: kalau bacaan pertama gagal / ragu,
+# jalankan deteksi full sekali di crop ROI, ambil polygon 4 titik grup
+# angka terbaik, warp polygon itu jadi persegi tegak (getPerspectiveTransform),
+# lalu baca ulang hasil warp. Kalau polygon tidak cukup miring, atau hasil
+# warp tidak lebih yakin dari bacaan pertama, bacaan pertama dipertahankan
+# (tidak ada regresi untuk kamera yang sudah tegak lurus). Semua helper di
+# bawah ini anti-gagal: kembalikan None bila opencv/model tidak ada, jadi
+# loop daemon tidak pernah mati karena koreksi ini.
+
+
+def _order_points(pts):
+    """4 titik sembarang -> urutan [kiri-atas, kanan-atas, kanan-bawah,
+    kiri-bawah]. Murni hitungan, bisa di-unit-test tanpa opencv."""
+    import math
+
+    p = [(float(x), float(y)) for x, y in pts]
+    # kiri-atas = jumlah x+y terkecil, kanan-bawah = terbesar;
+    # kanan-atas = selisih y-x terkecil, kiri-bawah = terbesar.
+    tl = min(p, key=lambda q: q[0] + q[1])
+    br = max(p, key=lambda q: q[0] + q[1])
+    tr = min(p, key=lambda q: q[1] - q[0])
+    bl = max(p, key=lambda q: q[1] - q[0])
+    return [tl, tr, br, bl]
+
+
+def _polygon_skew(ordered):
+    """Seberapa trapesium polygon itu: 0 = persegi sempurna, mendekati 1 =
+    sangat trapesium. Bandingkan panjang sisi atas vs bawah dan kiri vs
+    kanan. Murni hitungan."""
+    import math
+
+    (tl, tr, br, bl) = ordered
+
+    def _dist(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    top, bottom = _dist(tl, tr), _dist(bl, br)
+    left, right = _dist(tl, bl), _dist(tr, br)
+    if min(top, bottom, left, right) <= 0:
+        return 0.0
+    return max(abs(top - bottom) / max(top, bottom),
+               abs(left - right) / max(left, right))
+
+
+def _best_digit_polygon(results):
+    """Dari hasil readtext (crop ROI) -> polygon 4 titik grup angka terbaik,
+    atau None. Grup = box angka yang sebaris & berdekatan (kriteria yang
+    sama dengan _merge_row_boxes); polygon = hull sudut-sudut box grup yang
+    didekati jadi 4 titik. Butuh opencv hanya untuk hull/approx."""
     try:
-        texts = reader.recognize(crop)
-    except Exception as e:
-        return None, 0.0, f"recognize gagal: {e}"
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    boxes = []
+    for item in results or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        bbox, text, conf = item[0], str(item[1]), item[2]
+        if not re.search(r"\d", text.replace(",", ".").replace(" ", "")):
+            continue
+        try:
+            xs = [float(p[0]) for p in bbox]
+            ys = [float(p[1]) for p in bbox]
+        except (TypeError, IndexError, ValueError):
+            continue
+        try:
+            cf = float(conf)
+        except (TypeError, ValueError):
+            cf = 0.3
+        boxes.append({"bbox": bbox, "x0": min(xs), "y0": min(ys),
+                      "x1": max(xs), "y1": max(ys), "text": text, "conf": cf})
+    if not boxes:
+        return None
+    groups = []
+    for b in sorted(boxes, key=lambda d: d["x0"]):
+        placed = False
+        for g in groups:
+            gx0 = min(d["x0"] for d in g)
+            gy0 = min(d["y0"] for d in g)
+            gx1 = max(d["x1"] for d in g)
+            gy1 = max(d["y1"] for d in g)
+            overlap_h = min(gy1, b["y1"]) - max(gy0, b["y0"])
+            minh = min(gy1 - gy0, b["y1"] - b["y0"])
+            gap = b["x0"] - gx1
+            if minh > 0 and overlap_h / minh >= 0.4 and -minh * 0.5 <= gap <= minh * 1.0:
+                g.append(b)
+                placed = True
+                break
+        if not placed:
+            groups.append([b])
+    best = None
+    for g in groups:
+        x0 = min(b["x0"] for b in g)
+        y0 = min(b["y0"] for b in g)
+        x1 = max(b["x1"] for b in g)
+        y1 = max(b["y1"] for b in g)
+        area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        txt = " ".join(b["text"] for b in sorted(g, key=lambda b: b["x0"]))
+        t = txt.replace(",", ".").replace(" ", "")
+        cf = sum(b["conf"] for b in g) / len(g)
+        w_, h_ = max(1.0, x1 - x0), max(1.0, y1 - y0)
+        score = area * cf
+        score *= 3.0 if re.search(r"\d+[.,]\d+", t) else 1.0
+        score *= 1.5 if w_ > h_ else 0.4
+        if best is None or score > best[0]:
+            best = (score, g)
+    if best is None:
+        return None
+    pts = []
+    for b in best[1]:
+        for p in b["bbox"]:
+            try:
+                pts.append([float(p[0]), float(p[1])])
+            except (TypeError, ValueError):
+                pass
+    if len(pts) < 4:
+        return None
+    arr = np.array(pts, dtype=np.float32)
+    hull = cv2.convexHull(arr)
+    peri = cv2.arcLength(hull, True)
+    approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
+    if len(approx) != 4:
+        return None
+    return [(float(p[0][0]), float(p[0][1])) for p in approx]
+
+
+def _warp_polygon_to_bytes(img_arr, poly):
+    """Warp area polygon (koordinat piksel img_arr) jadi gambar persegi
+    tegak, dikembalikan sebagai JPEG bytes. None bila gagal."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    try:
+        ordered = _order_points(poly)
+        (tl, tr, br, bl) = ordered
+        import math
+        width = int(max(math.hypot(tr[0] - tl[0], tr[1] - tl[1]),
+                        math.hypot(br[0] - bl[0], br[1] - bl[1])))
+        height = int(max(math.hypot(bl[0] - tl[0], bl[1] - tl[1]),
+                         math.hypot(br[0] - tr[0], br[1] - tr[1])))
+        if width < 20 or height < 10 or width > 4000 or height > 4000:
+            return None
+        src = np.array(ordered, dtype=np.float32)
+        dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1],
+                        [0, height - 1]], dtype=np.float32)
+        m = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img_arr, m, (width, height),
+                                     borderMode=cv2.BORDER_REPLICATE)
+        ok, buf = cv2.imencode(".jpg", warped)
+        return buf.tobytes() if ok else None
+    except Exception:
+        return None
+
+
+def _pairs_from_recognize(texts):
+    """Ubah hasil reader.recognize() jadi list (teks, conf), dengan
+    pengaman yang sama seperti jalur cepat lama (bbox dibuang, conf
+    nyasar tidak boleh crash)."""
     pairs: list[tuple[str, float]] = []
     for item in texts or []:
         txt, cf = '', 0.5
@@ -363,23 +570,119 @@ def ocr_weight_fast(img_bytes: bytes, roi) -> tuple[float | None, float, str]:
         else:
             txt = str(item)
         pairs.append((txt, cf))
-    return pick_number(pairs)
+    return pairs
 
 
-def ocr_weight(img_bytes: bytes, roi, fast: bool = False) -> tuple[float | None, float, str]:
+def _perspective_retry(img_bytes: bytes, roi):
+    """Percobaan kedua khusus layar miring: deteksi full di crop ROI,
+    warp polygon angka terbaik jadi persegi, baca ulang. Kembalikan
+    (angka, conf, raw) bila berhasil, atau None bila tidak ada polygon
+    miring / warp gagal / hasil tidak membaik. Dipanggil HANYA bila
+    bacaan pertama gagal atau ragu, jadi frame yang sudah bagus tidak
+    membayar biaya deteksi full ini."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    full_reader = get_reader(fast=False)
+    fast_reader = get_reader(fast=True)
+    if full_reader is None or fast_reader is None:
+        return None
+    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    H, W = img.shape[:2]
+    x, y, w, h = roi
+    x0, y0 = int(x * W), int(y * H)
+    x1, y1 = int((x + w) * W), int((y + h) * H)
+    crop = img[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
+    try:
+        results = full_reader.readtext(crop)
+    except Exception:
+        return None
+    poly = _best_digit_polygon(results)
+    if poly is None:
+        return None
+    ordered = _order_points(poly)
+    # Hanya warp bila memang trapesium (skew >= 15%); kalau sudah persegi,
+    # baca ulang tidak akan memperbaiki apa-apa.
+    if _polygon_skew(ordered) < 0.15:
+        return None
+    # Polygon harus menutupi sebagian wajar dari crop (bukan serpihan).
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    pw, ph = max(xs) - min(xs), max(ys) - min(ys)
+    if pw <= 0 or ph <= 0 or pw < 0.05 * crop.shape[1] or ph < 0.05 * crop.shape[0]:
+        return None
+    warped_bytes = _warp_polygon_to_bytes(crop, poly)
+    if warped_bytes is None:
+        return None
+    try:
+        # Gambar warp sudah tegak: baca dengan ROI penuh, tanpa deskew.
+        warped_crop = preprocess_for_ocr(warped_bytes, (0.0, 0.0, 1.0, 1.0),
+                                         angle=0.0)
+        if warped_crop is None:
+            return None
+        texts = fast_reader.recognize(warped_crop)
+    except Exception:
+        return None
+    val, cf, raw = pick_number(_pairs_from_recognize(texts))
+    if val is None:
+        return None
+    return val, cf, raw + " [warp-perspektif]"
+
+
+def ocr_weight_fast(img_bytes: bytes, roi, angle: float = 0.0, persp: bool = True) -> tuple[float | None, float, str]:
+    """Jalur cepat: crop ROI -> recognizer langsung (tanpa deteksi).
+    Bila persp on dan bacaan pertama gagal (None) atau ragu (conf < 0.6),
+    coba sekali lagi lewat koreksi perspektif; hasil warp hanya dipakai
+    bila lebih yakin dari bacaan pertama."""
+    reader = get_reader(fast=True)
+    if reader is None:
+        return None, 0.0, "easyocr belum diinstall (pip install easyocr)"
+    crop = preprocess_for_ocr(img_bytes, roi, angle=angle)  # skala adaptif + deskew (port lokal)
+    if crop is None:
+        return None, 0.0, "gagal crop (opencv hilang?)"
+    try:
+        texts = reader.recognize(crop)
+    except Exception as e:
+        return None, 0.0, f"recognize gagal: {e}"
+    val, cf, raw = pick_number(_pairs_from_recognize(texts))
+    # Retry perspektif HANYA kalau benar-benar tidak dapat angka. Dulu juga
+    # retry saat conf <0.6 → tiap frame layar silau jadi 2x infer (0.8 dtk).
+    # Konsistensi temporal di loop daemon yang menangani conf rendah.
+    if persp and val is None:
+        try:
+            retry = _perspective_retry(img_bytes, roi)
+        except Exception:
+            retry = None
+        if retry is not None and (val is None or retry[1] > cf):
+            return retry
+    return val, cf, raw
+
+
+def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, persp: bool = True) -> tuple[float | None, float, str]:
     """Kembalikan (angka_kg, confidence 0-1, raw_text).
 
     fast=True: recognizer langsung di crop ROI (2-3 dtk, buat service).
     fast=False: deteksi dulu baru baca (lebih teliti, buat kalibrasi --once).
+    angle diteruskan ke preprocessing untuk deskew (port lokal).
+    persp=True: bila bacaan pertama gagal/ragu, coba sekali koreksi
+    perspektif (warp polygon angka jadi persegi) dan pakai hasilnya hanya
+    bila lebih yakin.
     """
     if fast:
-        return ocr_weight_fast(img_bytes, roi)
+        return ocr_weight_fast(img_bytes, roi, angle=angle, persp=persp)
 
     reader = get_reader(fast=False)
     if reader is None:
         return None, 0.0, "easyocr belum diinstall (pip install easyocr)"
 
-    processed = preprocess_for_ocr(img_bytes, roi)
+    processed = preprocess_for_ocr(img_bytes, roi, angle=angle)
 
     if processed is not None:
         results = reader.readtext(processed)
@@ -391,7 +694,15 @@ def ocr_weight(img_bytes: bytes, roi, fast: bool = False) -> tuple[float | None,
         results = reader.readtext(str(tmp))
 
     pairs = [(str(t), float(c)) for _, t, c in results]
-    return pick_number(pairs)
+    val, cf, raw = pick_number(pairs)
+    if persp and (val is None or cf < 0.6):
+        try:
+            retry = _perspective_retry(img_bytes, roi)
+        except Exception:
+            retry = None
+        if retry is not None and (val is None or retry[1] > cf):
+            return retry
+    return val, cf, raw
 
 
 def _score_digit_groups(results, W: int, H: int):
@@ -514,6 +825,184 @@ def _merge_row_boxes(boxes: list[dict]) -> list[list[dict]]:
     return groups
 
 
+# --- AUTO-TRACK ROI (port dari versi lokal) ---
+# Dipakai HANYA di loop daemon (lihat main): cari display sendiri saat
+# start, lacak ulang berkala / saat bacaan gagal beruntun, simpan ROI ke
+# server bila bergeser jauh. --auto-roi remote di bawah tetap memakai
+# detect_roi/_score_digit_groups-nya sendiri dan tidak tersentuh blok ini.
+
+
+def tracking_text_ok(txt: str) -> bool:
+    """Teks hasil deteksi cukup yakin untuk memindahkan ROI?
+
+    Display timbangan normal = beberapa digit ("23.45", "0.00"). Deteksi
+    satu digit acak ('1', '3', '8' dari segmen/latar) JANGAN dipakai:
+    dulu ROI drift ke area sembarang, OCR gagal terus, lalu service
+    me-restart diri tiap ROI "bergeser". Pengecualian: '0' sah untuk
+    timbangan kosong yang cuma menampilkan satu nol.
+    """
+    t = (txt or "").replace(",", ".").replace(" ", "")
+    if len(re.findall(r"\d", t)) >= 2:
+        return True
+    return t in ("0", "0.", "0.0", "0.00")
+
+
+def roi_clamp(roi) -> tuple[float, float, float, float]:
+    x, y, w, h = (float(v) for v in roi)
+    x = min(max(x, 0.0), 0.99)
+    y = min(max(y, 0.0), 0.99)
+    w = min(max(w, 0.01), 1.0 - x)
+    h = min(max(h, 0.01), 1.0 - y)
+    return (x, y, w, h)
+
+
+def roi_expand(roi, frac: float = 0.75) -> tuple[float, float, float, float]:
+    """Lebarkan ROI frac*(w,h) ke tiap sisi — jendela cari saat tracking."""
+    x, y, w, h = roi
+    return roi_clamp((x - w * frac, y - h * frac, w * (1 + 2 * frac), h * (1 + 2 * frac)))
+
+
+def roi_smooth(old, new, alpha: float = 0.6) -> tuple[float, float, float, float]:
+    """Gerak ROI jangan lompat: campur ROI lama dengan temuan baru."""
+    return roi_clamp(tuple(o + (n - o) * alpha for o, n in zip(old, new)))
+
+
+def roi_changed_enough(a, b, pos: float = 0.02, size: float = 0.20) -> bool:
+    """True bila pusat geser > pos (fraksi) atau ukuran berubah > size (relatif)."""
+    acx, acy = a[0] + a[2] / 2, a[1] + a[3] / 2
+    bcx, bcy = b[0] + b[2] / 2, b[1] + b[3] / 2
+    if abs(acx - bcx) > pos or abs(acy - bcy) > pos:
+        return True
+    return any(abs(nv - ov) > size * max(ov, 0.01) for ov, nv in zip(a[2:], b[2:]))
+
+
+def bbox_angle_deg(bbox) -> float:
+    """Sudut miring garis teks (derajat, koordinat gambar y-ke-bawah).
+
+    Dari sisi atas box deteksi (p0->p1). Dinormalkan ke -45..45: display
+    miring karena roll kamera berapa pun, teksnya tetap 'hampir horizontal'.
+    """
+    import math
+
+    try:
+        x0, y0 = float(bbox[0][0]), float(bbox[0][1])
+        x1, y1 = float(bbox[1][0]), float(bbox[1][1])
+    except (TypeError, IndexError, ValueError):
+        return 0.0
+    ang = math.degrees(math.atan2(y1 - y0, x1 - x0))
+    while ang > 45:
+        ang -= 90
+    while ang < -45:
+        ang += 90
+    return ang
+
+
+def pick_roi_from_results(results, W: int, H: int, margin: float = 0.15):
+    """Pilih box angka terbaik dari hasil readtext -> (roi, teks, conf, sudut).
+
+    Murni hitungan (tanpa OCR) supaya bisa di-unit-test pakai hasil palsu.
+    Sudut = kemiringan teks dalam gambar, buat deskew saat recognizer jalan.
+    """
+    best = None
+    for item in results or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        bbox, text, conf = item[0], str(item[1]), item[2]
+        t = text.replace(",", ".").replace(" ", "")
+        if not re.search(r"\d", t):
+            continue
+        try:
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+        except (TypeError, IndexError):
+            continue
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        try:
+            cf = float(conf)
+        except (TypeError, ValueError):
+            cf = 0.3
+        score = area * cf * (2.0 if re.search(r"\d+[.,]\d+", t) else 1.0)
+        if best is None or score > best[0]:
+            best = (score, x0, y0, x1, y1, text, cf, bbox_angle_deg(bbox))
+    if best is None:
+        seen = " | ".join(str(t) for _, t, _ in (results or [])[:6]) or "-"
+        return None, f"tidak ada angka terdeteksi (kelihatan: {seen[:80]})", 0.0, 0.0
+    _, x0, y0, x1, y1, txt, cf, ang = best
+    bw, bh = max(1.0, x1 - x0), max(1.0, y1 - y0)
+    rx0 = max(0.0, (x0 - bw * margin) / W)
+    ry0 = max(0.0, (y0 - bh * margin) / H)
+    rx1 = min(float(W), x1 + bw * margin) / W
+    ry1 = min(float(H), y1 + bh * margin) / H
+    roi = (round(rx0, 3), round(ry0, 3), round(rx1 - rx0, 3), round(ry1 - ry0, 3))
+    return roi, txt, cf, ang
+
+
+def detect_roi_in_frame(img_bytes: bytes, search_roi=None):
+    """Deteksi area display dalam satu frame -> (roi, teks, conf, sudut_miring).
+
+    search_roi diberikan: deteksi hanya di jendela itu (lebih cepat dari
+    full-frame, dan display yang bergeser dikit tetap ketemu); koordinat
+    hasil dipetakan balik ke fraksi full-frame. margin lebih longgar
+    (0.30) biar recognizer mode --fast punya ruang napas.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None, "opencv belum diinstall (pip install opencv-python)", 0.0, 0.0
+    reader = get_reader(fast=False)
+    if reader is None:
+        return None, "easyocr belum diinstall (pip install easyocr)", 0.0, 0.0
+    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None, "gagal decode gambar", 0.0, 0.0
+    H, W = img.shape[:2]
+    ox, oy = 0, 0
+    target = img
+    if search_roi is not None:
+        sx, sy, sw, sh = search_roi
+        ox, oy = int(sx * W), int(sy * H)
+        x1, y1 = int((sx + sw) * W), int((sy + sh) * H)
+        target = img[oy:y1, ox:x1]
+        if target.size == 0:
+            return None, "jendela cari kosong", 0.0, 0.0
+    try:
+        results = reader.readtext(target)
+    except Exception as e:
+        return None, f"detect gagal: {e}", 0.0, 0.0
+    if ox or oy:
+        shifted = []
+        for item in results or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 3:
+                bbox = [[p[0] + ox, p[1] + oy] for p in item[0]]
+                shifted.append((bbox, item[1], item[2]))
+        results = shifted
+    return pick_roi_from_results(results, W, H, margin=0.30)
+
+
+def post_roi_save(api_base: str, station: str, roi) -> bool:
+    """Simpan ROI hasil tracking ke Pengaturan server (endpoint yang sama
+    dengan tombol SIMPAN di modal kalibrasi), biar restart service tidak
+    mulai dari ROI lama."""
+    if requests is None:
+        return False
+    try:
+        r = _http_session().post(
+            api_base.rstrip("/") + "/api/cam/service/roi",
+            json={"station": station,
+                  "roi": ",".join(f"{float(v):.3f}" for v in roi),
+                  # Jangan restart service: ROI baru sudah aktif di memori
+                  # loop ini; stop+start = model load ulang 8-15 dtk + daemon
+                  # membunuh dirinya sendiri tiap ROI bergeser.
+                  "no_restart": True},
+            timeout=5)
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
 def post_reading(api_base: str, payload: dict) -> bool:
     if requests is None:
         print("  -> gagal POST: modul 'requests' belum diinstall")
@@ -523,8 +1012,8 @@ def post_reading(api_base: str, payload: dict) -> bool:
         r = _http_session().post(url, json=payload, timeout=8)
         if r.status_code in (200, 201):
             data = r.json()
-            if data.get('status') in ('debug', 'empty'):
-                return True  # gagal/0: teks live-only, tidak masuk DB
+            if data.get('status') in ('debug', 'empty', 'live'):
+                return True  # gagal/0/frame-cepat: live-only, tidak masuk DB
             print(f"  -> tersimpan id={data.get('reading', {}).get('id')} "
                   f"selisih={data.get('selisih_kg')}kg ({data.get('selisih_persen')}%) "
                   f"link_mesin={data.get('linked_mesin_id')}")
@@ -569,7 +1058,13 @@ def main() -> int:
         pass
 
     ap = argparse.ArgumentParser(description="Camera OCR: baca angka display timbangan dari IP cam (EasyOCR)")
-    ap.add_argument("--snapshot-url", required=True, help="cth: http://192.168.1.50/snapshot.jpg")
+    ap.add_argument("--snapshot-url", default="",
+                    help="cth: http://192.168.1.50/snapshot.jpg (salah satu: snapshot-url ATAU rtsp-url; "
+                         "boleh juga berupa URL stream rtsp:// / MJPEG)")
+    ap.add_argument("--rtsp-url", default="",
+                    help="cth: rtsp://admin:KODE_STIKER@192.168.1.64:554/Streaming/Channels/101 "
+                         "(EZVIZ H3c: aktifkan dulu RTSP di aplikasi EZVIZ > Local Service Settings; "
+                         "password = 6 huruf kode verifikasi di stiker kamera, BUKAN password akun EZVIZ)")
     ap.add_argument("--station", default="POS-01")
     ap.add_argument("--api-base", default="http://localhost:8000")
     ap.add_argument("--roi", type=parse_roi, default="0.35,0.30,0.30,0.20",
@@ -590,6 +1085,25 @@ def main() -> int:
                     help="mode cepat 2-3 dtk: recognizer langsung di ROI tanpa deteksi (wajib ROI sudah pas)")
     ap.add_argument("--min-conf", type=float, default=0.4,
                     help="batas keyakinan 0-1: bacaan di bawah ini dibuang (default 0.4)")
+    ap.add_argument("--db-every", type=float, default=2.0,
+                    help="simpan bacaan ke DB tiap sekian detik (0=semua frame). "
+                         "Live cache LED tetap diupdate tiap frame, jadi angka tetap "
+                         "responsif tanpa membanjiri MySQL (default 2 dtk)")
+    ap.add_argument("--track", action=argparse.BooleanOptionalAction, default=True,
+                    help="AUTO-TRACK ROI: service mencari sendiri area display saat start, "
+                         "melacaknya lagi tiap --track-every frame / saat bacaan gagal beruntun "
+                         "(--no-track = perilaku lama, ROI diam)")
+    ap.add_argument("--track-every", type=int, default=50,
+                    help="cek ulang posisi display tiap sekian frame (default 50)")
+    ap.add_argument("--track-fails", type=int, default=3,
+                    help="gagal/ragu beruntun sekian kali -> cari ulang display (default 3)")
+    ap.add_argument("--save-roi", action=argparse.BooleanOptionalAction, default=True,
+                    help="simpan ROI hasil tracking ke Pengaturan server (maks 1x/menit, "
+                         "hanya bila bergeser jauh) biar restart tidak mulai dari ROI lama")
+    ap.add_argument("--perspective", action=argparse.BooleanOptionalAction, default=True,
+                    help="koreksi perspektif: bila bacaan pertama gagal/ragu, warp polygon "
+                         "angka jadi persegi lalu baca ulang; hasil warp dipakai hanya bila "
+                         "lebih yakin (--no-perspective = matikan, perilaku lama)")
     ap.add_argument("--stop-file", default="",
                     help="file pemicu berhenti (dibuat oleh tombol STOP di web); loop keluar saat file ada")
     ap.add_argument("--pid-file", default="",
@@ -613,6 +1127,15 @@ def main() -> int:
                     help="tulis hasil --auto-roi ke JSON (state running/done/error) untuk polling web async")
     args = ap.parse_args()
 
+    # Sumber frame: snapshot HTTP/MJPEG atau RTSP — wajib tepat satu.
+    # --rtsp-url hanya memilih URL sumber; penanganannya tetap lewat
+    # fetch_snapshot remote (deteksi stream -> _grab_stream_frame TCP).
+    use_rtsp = bool(args.rtsp_url.strip())
+    use_snap = bool(args.snapshot_url.strip())
+    if use_rtsp == use_snap:
+        ap.error("isi tepat satu: --snapshot-url ATAU --rtsp-url")
+    source_url = args.rtsp_url.strip() if use_rtsp else args.snapshot_url.strip()
+
     # Mode GRAB-ONLY: ambil 1 frame untuk pratinjau browser (RTSP tak bisa
     # diputar browser). Tidak load EasyOCR → cepat & ringan.
     if args.grab_only:
@@ -620,7 +1143,7 @@ def main() -> int:
             print("GRAB gagal: --out wajib diisi")
             return 1
         try:
-            img = fetch_snapshot(args.snapshot_url, timeout=args.grab_timeout)
+            img = fetch_snapshot(source_url, timeout=args.grab_timeout)
             Path(args.out).write_bytes(img)
         except Exception as e:
             print(f"GRAB gagal: {e}")
@@ -645,7 +1168,7 @@ def main() -> int:
                 return 1
         else:
             try:
-                img = fetch_snapshot(args.snapshot_url)
+                img = fetch_snapshot(source_url)
             except Exception as e:
                 print(f"ROI gagal: snapshot: {e}")
                 write_result(args.result_file, state="error", message=f"snapshot: {e}")
@@ -734,7 +1257,7 @@ def main() -> int:
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[CAM-OCR] station={station} src={args.snapshot_url} roi={args.roi} rotate={args.rotate} interval={args.interval}s fast={args.fast}")
+    print(f"[CAM-OCR] station={station} src={source_url} roi={args.roi} rotate={args.rotate} interval={args.interval}s fast={args.fast} perspective={args.perspective}")
     print("[CAM-OCR] Kalibrasi: jalankan --once, lihat foto crop, geser --roi sampai display pas.")
     if args.simulate:
         print("[CAM-OCR] SIMULATE: angka acak, tetap POST biar alur API ketest.")
@@ -756,6 +1279,11 @@ def main() -> int:
 
     write_status(args.status_file, "starting", "Menyiapkan service...")
     fail_streak = 0
+    last_db_post = 0.0
+    # Bacaan terakhir buat konsistensi temporal: satu frame conf rendah tetap
+    # diterima KALAU frame sebelumnya membaca angka yang sama (±0.30 kg).
+    # Lebih cepat & tetap akurat: misread acak tidak akan dua kali kebetulan sama.
+    recent_ok: list[tuple[float, float]] = []
     CAMERA_FAIL_AFTER = 5
     MODEL_RETRY_SEC = 60.0
 
@@ -785,6 +1313,22 @@ def main() -> int:
         if reader_ok:
             print(f"[CAM-OCR] Model siap ({time.time() - t0:.1f}s).", flush=True)
             write_status(args.status_file, "running", "Model siap, OCR jalan.")
+
+    # --- AUTO-TRACK ROI (state, port lokal) ---
+    # roi_cur = ROI kerja yang bisa bergerak sendiri; args.roi cuma tebakan
+    # awal. need_track=True -> frame pertama langsung cari display sendiri,
+    # operator tidak perlu setting ROI dulu. Blok ini hanya dipakai di loop
+    # daemon (kondisi tracking di bawah mengecualikan --once/--simulate).
+    roi_cur = tuple(float(v) for v in args.roi)
+    roi_saved = roi_cur
+    roi_angle = 0.0  # kemiringan teks terakhir dari tracking (derajat)
+    ocr_fail_streak = 0
+    frames_since_track = 0
+    need_track = bool(args.track)
+    last_roi_save = 0.0
+    if args.track and not args.simulate:
+        print("[CAM-OCR] AUTO-TRACK ROI aktif: display dicari sendiri saat start, "
+              f"dicek ulang tiap {args.track_every} frame / {args.track_fails}x gagal.")
 
     while True:
         if args.stop_file and Path(args.stop_file).exists():
@@ -819,8 +1363,9 @@ def main() -> int:
                                  f"Model belum siap: {e}. Retry otomatis 60 dtk.")
             time.sleep(min(max(args.interval, 2.0), 10.0))
             continue
+        t_frame = time.time()  # pacing interval dihitung dari AWAL frame
         try:
-            img = apply_rotate(fetch_snapshot(args.snapshot_url), args.rotate)
+            img = apply_rotate(fetch_snapshot(source_url), args.rotate)
             if fail_streak >= CAMERA_FAIL_AFTER:
                 write_status(args.status_file, "running", "Kamera kembali terhubung.")
             fail_streak = 0
@@ -829,7 +1374,7 @@ def main() -> int:
             print(f"[{datetime.now():%H:%M:%S}] snapshot gagal ({fail_streak}x): {e}")
             if fail_streak == CAMERA_FAIL_AFTER or fail_streak % 30 == 0:
                 write_status(args.status_file, "camera_fail",
-                             f"Snapshot gagal {fail_streak}x: {e}. URL={args.snapshot_url}. "
+                             f"Snapshot gagal {fail_streak}x: {e}. URL={source_url}. "
                              "Cek: kamera nyala + satu LAN/WiFi, URL benar, dan (EZVIZ) RTSP sudah "
                              "diaktifkan di app (LAN Live View → Local Server Settings); "
                              "password RTSP = kode verifikasi di stiker, bukan password akun.")
@@ -840,6 +1385,44 @@ def main() -> int:
 
         weighed_at = datetime.now(timezone.utc).isoformat()
 
+        # AUTO-TRACK: cari/lacak ulang area display dalam frame INI juga
+        # (frame yang sama lanjut dipakai OCR dengan ROI baru). Jalan saat:
+        # start (need_track), berkala (track_every), atau bacaan gagal
+        # beruntun (track_fails). Dicari dulu di jendela sekitar ROI lama
+        # (cepat), gagal -> full-frame. Hasilnya dihaluskan (smooth) dan
+        # disimpan balik ke server bila bergeser jauh (maks 1x/menit).
+        # TIDAK jalan di --once/--simulate (dan frame ini sudah diputar
+        # --rotate dulu, jadi tracking memakai koordinat gambar tegak).
+        if (args.track and not args.simulate and not args.once and reader_ok
+                and (need_track or frames_since_track >= max(5, args.track_every)
+                     or ocr_fail_streak >= max(1, args.track_fails))):
+            try:
+                found, ftxt, _fcf, fang = detect_roi_in_frame(img, search_roi=roi_expand(roi_cur, 0.75))
+                if found is None or not tracking_text_ok(ftxt):
+                    found, ftxt, _fcf, fang = detect_roi_in_frame(img, search_roi=None)
+                # Satu digit acak ('1','3','8') bukan display timbangan:
+                # jangan pindahkan ROI (lihat tracking_text_ok).
+                if found is not None and not tracking_text_ok(ftxt):
+                    found = None
+                if found is not None:
+                    smoothed = roi_smooth(roi_cur, found)
+                    roi_angle = roi_angle + (fang - roi_angle) * 0.6
+                    if roi_changed_enough(roi_cur, smoothed):
+                        print(f"[CAM-OCR] ROI track: {roi_cur} -> {smoothed} miring {roi_angle:.1f}° (baca: {ftxt!r})", flush=True)
+                    roi_cur = smoothed
+                    if (args.save_roi and roi_changed_enough(roi_saved, roi_cur)
+                            and time.time() - last_roi_save > 60):
+                        if post_roi_save(args.api_base, station, roi_cur):
+                            roi_saved = roi_cur
+                            last_roi_save = time.time()
+                else:
+                    print(f"[CAM-OCR] ROI track: display tidak ketemu ({ftxt}) — pakai ROI terakhir.", flush=True)
+            except Exception as e:
+                print(f"[CAM-OCR] ROI track error (lanjut ROI terakhir): {e}", flush=True)
+            need_track = False
+            frames_since_track = 0
+            ocr_fail_streak = 0
+
         # Satu frame busuk JANGAN PERNAH membunuh daemon (kasus 22 Sep:
         # ValueError dari parser → proses mati → pill "BERHENTI").
         try:
@@ -848,8 +1431,9 @@ def main() -> int:
                 weight, conf, raw = round(20 + random.random() * 8, 2), 0.99, "SIMULATE"
             else:
                 t0 = time.time()
-                weight, conf, raw = ocr_weight(img, args.roi, fast=args.fast)
+                weight, conf, raw = ocr_weight(img, roi_cur, fast=args.fast, angle=roi_angle, persp=args.perspective)
                 dt = time.time() - t0
+            frames_since_track += 1
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             image_path = None
@@ -858,7 +1442,18 @@ def main() -> int:
                 (save_dir / fname).write_bytes(img)
                 image_path = f"cam/{fname}"
 
+            # Konsistensi temporal (hanya untuk bacaan valid).
+            agree = False
+            if weight is not None:
+                now_ts = time.time()
+                recent_ok = [(t, w) for (t, w) in recent_ok if now_ts - t <= 2.0]
+                agree = any(abs(w - weight) <= 0.30 for _t, w in recent_ok)
+                recent_ok.append((now_ts, weight))
+                if len(recent_ok) > 20:
+                    recent_ok = recent_ok[-20:]
+
             if weight is None:
+                ocr_fail_streak += 1
                 print(f"[{ts}] OCR gagal (raw={raw[:80]!r}). Cek --roi / cahaya / fokus.")
                 # Tetap lapor ke server (tanpa ocr_weight) supaya frontend bisa
                 # tampilkan "kamera lihat: ..." buat debug ROI. Server TIDAK
@@ -867,28 +1462,37 @@ def main() -> int:
                     "station": station,
                     "weighed_at": weighed_at,
                     "ocr_weight": None,
-                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(args.roi), "model": "easyocr-en", "fast": args.fast},
+                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
-            elif not args.simulate and conf < args.min_conf:
-                # Keyakinan rendah: JANGAN masuk DB, anggap gagal. Sampling +
-                # LED pakai bacaan yakin saja. Ambang diatur via Settings.
+            elif not args.simulate and conf < args.min_conf and not agree:
+                ocr_fail_streak += 1
+                # Keyakinan rendah DAN tidak ada bacaan serupa di frame
+                # sebelumnya: buang. Kalau dua frame berturut-turut membaca
+                # angka yang sama, tetap dipakai (lihat `agree` di atas).
                 print(f"[{ts}] OCR ragu (conf {conf:.2f}, raw={raw[:80]!r}) — dibuang.")
                 post_reading(args.api_base, {
                     "station": station,
                     "weighed_at": weighed_at,
                     "ocr_weight": None,
-                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(args.roi), "model": "easyocr-en", "fast": args.fast},
+                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
             else:
+                ocr_fail_streak = 0
                 extra = "" if args.simulate else f" {dt:.1f}s"
                 print(f"[{ts}][{station}] OCR: {weight:.2f} kg (conf {conf:.2f}){extra} raw={raw[:60]!r}")
+                # Live cache SELALU diupdate (LED cepat); insert DB dibatasi
+                # --db-every detik biar frame cepat tidak membanjiri MySQL.
+                persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
+                if persist_now:
+                    last_db_post = time.time()
                 post_reading(args.api_base, {
                     "station": station,
                     "weighed_at": weighed_at,
                     "image_path": image_path,
                     "ocr_weight": weight,
                     "ocr_conf": round(float(conf), 3),
-                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(args.roi), "model": "easyocr-en", "fast": args.fast},
+                    "persist": persist_now,
+                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
         except Exception as e:
             print(f"[{datetime.now():%H:%M:%S}] frame error (lanjut): {e}")
@@ -896,8 +1500,11 @@ def main() -> int:
 
         if args.once:
             return 0 if weight is not None else 2
-        # Interval dihitung dari selesai infer -> jeda tambahan biar ritme ~interval.
-        time.sleep(args.interval)
+        # Ritme interval dihitung dari AWAL frame: sisa waktu saja yang
+        # ditidurkan. Dulu sleep penuh setelah infer -> siklus selalu
+        # (infer 2-3 dtk + interval), sekarang totalnya ~interval
+        # (atau secepat infer selesai bila infer > interval).
+        time.sleep(max(0.0, args.interval - (time.time() - t_frame)))
 
 
 if __name__ == "__main__":

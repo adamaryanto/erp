@@ -173,23 +173,25 @@
         // Data grafik JUGA di luar state Alpine (alasan sama: mutasi array
         // reaktif 10x/detik + Chart.js = stack overflow).
         let chartPoints = Array(50).fill(0);
-        // Jendela 3 detik bobot terakhir (plain, bukan reaktif) buat deteksi
-        // STABIL: trigger sampling hanya kalau sebaran <= 0.6 kg. Tanpa ini,
-        // angka lagi NAIK/GUNCANG ikut ke-sampling → record dobel nonstop.
-        let wWindow = [];
+        // Deteksi STABIL berbasis WAKTU (bukan 10 sampel × 100ms = 1 dtk):
+        // angka dianggap mantap bila berubah < 0.10 kg selama 400ms. Lebih
+        // cepat nangkep di kerja hectic, tanpa ikut menyampling angka yang
+        // masih naik/turun. Reset otomatis tiap keranjang baru di-arm.
+        let wStableRef = null;
+        let wStableSince = 0;
+        function __wStable(w) {
+            const now = Date.now();
+            if (!(w > 0)) { wStableRef = null; return false; }
+            if (wStableRef === null || Math.abs(w - wStableRef) > 0.10) {
+                wStableRef = w;
+                wStableSince = now;
+                return false;
+            }
+            return (now - wStableSince) >= 400;
+        }
         // Cooldown 2 detik tiap habis nangkep: biar tidak langsung sampling
         // lagi di tengah transisi (turun/naik) yang bikin hasil sampah.
         let loopCooldownUntil = 0;
-        function __wStable() {
-            if (wWindow.length < 10) return false;
-            let mn = Infinity, mx = -Infinity;
-            for (let i = 0; i < wWindow.length; i++) {
-                const v = wWindow[i];
-                if (v < mn) mn = v;
-                if (v > mx) mx = v;
-            }
-            return (mx - mn) <= 0.6;
-        }
         function liveTimbang() {
             return {
                 dbOrders: @json($openOrders ?? []),
@@ -666,7 +668,7 @@
                         const res = await fetch('/api/cam/service/start', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation, interval: 0.2 }),
+                            body: JSON.stringify({ station: this.selectedStation, interval: 0.5 }),
                         });
                         const data = await res.json();
                         if (data.status === 'error') {
@@ -708,7 +710,7 @@
                         const res = await fetch('/api/cam/service/start', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation, interval: 0.2 }),
+                            body: JSON.stringify({ station: this.selectedStation, interval: 0.5 }),
                         });
                         const data = await res.json();
                         if (data.status === 'running') {
@@ -999,7 +1001,7 @@
                     this.autoLoop = true;
                     this.autoStopped = false;
                     this.autoArmed = true;
-                    wWindow.length = 0;
+                    wStableRef = null;
                     loopCooldownUntil = 0;
                     this.autoCount = 0;
                     this.autoTotalNetto = 0;
@@ -1019,11 +1021,11 @@
                     // Timer DIPASANG PALING DULU: kalau ada error di initChart /
                     // restoreSession di bawah, polling tetap jalan.
                     this.pollBackendLive();
-                    // Poll 1.5 dtk (BUKAN 500ms): php artisan serve itu single-thread,
-                    // polling 2x/detik bikin antrean request — semua tombol (termasuk
-                    // STOP) terasa macet. LED cam update tiap ~5 dtk, jadi 1.5 dtk cukup.
+                    // Poll 400ms: dulu 1.5 dtk → angka telat sampai 1.5 dtk +
+                    // antrean auto-sampling, terasa lemot di pabrik. 400ms bikin
+                    // re-arm "habis di-0-kan" dan trigger timbang jauh lebih responsif.
                     // Tab tidak aktif → skip polling biar antrean tidak numpuk.
-                    setInterval(() => { if (!document.hidden) this.pollBackendLive(); }, 1500);
+                    setInterval(() => { if (!document.hidden) this.pollBackendLive(); }, 400);
                     this.refreshServiceStatus();
                     setInterval(() => this.refreshServiceStatus(), 5000);
                     try { this.initChart(); } catch (e) { console.warn('chart off', e); }
@@ -1098,9 +1100,7 @@
                 tickAutoLoop() {
                     if (!this.autoLoop || this.isSampling) return;
                     const w = this.effectiveRawWeight;
-                    wWindow.push(w);
-                    if (wWindow.length > 20) wWindow.shift();
-                    if (this.autoArmed && w > this.triggerKg && __wStable() && Date.now() >= loopCooldownUntil) {
+                    if (this.autoArmed && w > this.triggerKg && __wStable(w) && Date.now() >= loopCooldownUntil) {
                         this.autoArmed = false;
                         this.startSampling();
                     } else if (!this.autoArmed && !this.showResult
@@ -1109,7 +1109,7 @@
                         // OCR sering kelewat momen pas 0).
                         && (w < this.emptyKg || (this.lastBasketW !== null && w < this.lastBasketW - 5))) {
                         this.autoArmed = true;
-                        wWindow.length = 0;
+                        wStableRef = null;
                     }
                 },
 

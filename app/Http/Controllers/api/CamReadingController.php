@@ -31,6 +31,10 @@ class CamReadingController extends Controller
             'image_path' => 'nullable|string|max:500',
             'ocr_weight' => 'nullable|numeric|min:0|max:200',
             'ocr_conf' => 'nullable|numeric|min:0|max:1',
+            // Daemon kirim persist=false untuk frame cepat: cukup update live
+            // cache (LED responsif), TIDAK insert DB tiap frame. DB diisi tiap
+            // --db-every detik saja biar MySQL tidak jadi bottleneck.
+            'persist' => 'nullable|boolean',
             'basket_pred' => 'nullable|string|max:20',
             'basket_conf' => 'nullable|numeric|min:0|max:1',
             'chicken_count' => 'nullable|integer|min:0|max:100',
@@ -71,6 +75,12 @@ class CamReadingController extends Controller
         // 2-3 dtk) tapi JANGAN masuk DB biar tidak banjir ribuan baris nol.
         if (! isset($validated['ocr_weight']) || (float) $validated['ocr_weight'] <= 0) {
             return response()->json(['status' => 'empty', 'station' => $station->code], 200);
+        }
+
+        // Frame cepat (persist=false): live cache sudah diupdate di atas,
+        // cukup balas — jangan insert DB + query link mesin tiap frame.
+        if (array_key_exists('persist', $validated) && ! $validated['persist']) {
+            return response()->json(['status' => 'live', 'station' => $station->code], 200);
         }
 
         // 2) Coba link ke timbangan mesin terdekat (±10 detik, station sama).
@@ -820,6 +830,10 @@ class CamReadingController extends Controller
             'station' => 'nullable|string|max:20',
             'roi' => 'required|string|max:50',
             'rotate' => 'nullable|integer|in:0,90,180,270',
+            // Daemon auto-track mengirim no_restart=1: simpan ROI saja, JANGAN
+            // stop+start dirinya sendiri (dulu tiap ROI bergeser service
+            // membunuh & me-restart diri -> model load ulang & OCR putus).
+            'no_restart' => 'nullable|boolean',
         ]);
 
         $parts = array_map('floatval', explode(',', $validated['roi']));
@@ -836,8 +850,10 @@ class CamReadingController extends Controller
         $settings->update($update);
 
         // Terapkan ke daemon yang sedang jalan (stop + start = pakai setting baru).
+        // Kecuali permintaan datang dari daemon auto-track itu sendiri: ROI
+        // baru sudah dipakai di memori service, restart hanya bikin mati-mati.
         $restarted = false;
-        if ($this->heartbeatAlive($station)) {
+        if (! ($validated['no_restart'] ?? false) && $this->heartbeatAlive($station)) {
             $prevInterval = (float) (Cache::get($this->serviceKey($station))['interval'] ?? 2);
             $this->stopService(new Request(['station' => $station]));
             sleep(1);
