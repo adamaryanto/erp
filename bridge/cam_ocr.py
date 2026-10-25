@@ -1393,9 +1393,19 @@ def main() -> int:
         # disimpan balik ke server bila bergeser jauh (maks 1x/menit).
         # TIDAK jalan di --once/--simulate (dan frame ini sudah diputar
         # --rotate dulu, jadi tracking memakai koordinat gambar tegak).
+        # PERCEPAT (aman): tracking dan retry perspektif JANGAN jalan di
+        # frame yang sama. Tracking sudah melakukan deteksi full (jendela
+        # luas lalu full-frame); retry perspektif akan menambah deteksi
+        # full kedua di frame yang sama — inilah yang bikin satu frame
+        # busuk lama tanpa posting baru. Perspektif ditunda ke frame
+        # berikut, saat tracking tidak jalan lagi (fail streak dan
+        # frames_since_track direset di bawah). Ambang conf dan konsistensi
+        # temporal TIDAK diubah, jadi akurasi tidak dikorbankan.
+        did_track = False
         if (args.track and not args.simulate and not args.once and reader_ok
                 and (need_track or frames_since_track >= max(5, args.track_every)
                      or ocr_fail_streak >= max(1, args.track_fails))):
+            did_track = True
             try:
                 found, ftxt, _fcf, fang = detect_roi_in_frame(img, search_roi=roi_expand(roi_cur, 0.75))
                 if found is None or not tracking_text_ok(ftxt):
@@ -1431,7 +1441,7 @@ def main() -> int:
                 weight, conf, raw = round(20 + random.random() * 8, 2), 0.99, "SIMULATE"
             else:
                 t0 = time.time()
-                weight, conf, raw = ocr_weight(img, roi_cur, fast=args.fast, angle=roi_angle, persp=args.perspective)
+                weight, conf, raw = ocr_weight(img, roi_cur, fast=args.fast, angle=roi_angle, persp=(args.perspective and not did_track))
                 dt = time.time() - t0
             frames_since_track += 1
 

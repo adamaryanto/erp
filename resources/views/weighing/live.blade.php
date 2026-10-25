@@ -1324,10 +1324,27 @@
                 clearTimeout(to);
                 var d = await res.json();
                 var on = !!d.connected && d.weight !== null && d.weight !== undefined;
-                var val = null;
-                if (on) { val = Number(d.weight); }
-                __ledSet('ledValue', val !== null ? val.toFixed(2) : '00.00');
-                if (on) __ledSet('ledMsg', '');
+                var hasWeight = d.weight !== null && d.weight !== undefined;
+                var val = hasWeight ? Number(d.weight) : null;
+                if (on) {
+                    __ledSet('ledValue', val.toFixed(2));
+                    __ledSet('ledMsg', '');
+                } else if (val !== null) {
+                    // Data basi: TAMPILKAN berat terakhir, jangan paksa 00.00.
+                    // Sebelumnya, 00.00 palsu (basi, berat terakhir disembunyikan)
+                    // dan 00.00 asli (timbangan kosong, data fresh) kelihatan sama
+                    // persis — itulah kenapa LED "stack di 0 lama" padahal berat
+                    // sudah naik: begitu timbangan sempat 0 atau posting baru
+                    // telat, LED dikunci 00.00 sampai posting berikut. Dengan
+                    // ini, berat terakhir tetap kelihatan + label DATA BASI dan
+                    // "update Xs lalu" membedakannya dari 0 asli; begitu posting
+                    // baru masuk, angka langsung update tanpa refresh halaman.
+                    __ledSet('ledValue', val.toFixed(2));
+                    __ledSet('ledMsg', 'DATA BASI');
+                } else {
+                    __ledSet('ledValue', '00.00');
+                    __ledSet('ledMsg', '');
+                }
                 __ledSet('ledAge', (d.age_seconds !== null && d.age_seconds !== undefined) ? ('update ' + d.age_seconds + 's lalu') : '');
                 var box = document.getElementById('ledStatus');
                 if (box) box.innerHTML = on ? __BADGE.stabil : (mode === 'cam' ? __BADGE.cam : __BADGE.off);

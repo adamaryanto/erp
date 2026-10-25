@@ -114,9 +114,15 @@ class WeighingController extends Controller
 
         $age = (int) abs(now()->diffInSeconds(Carbon::parse($live['at'])));
 
-        // CAM ~1.5 bacaan/detik: umur >2 dtk sudah basi. Peringatan kuning
-        // di 2 dtk (badge), putus di 3 dtk — angka hantu tidak dipajang lama.
-        $maxAge = $source === 'cam' ? 3 : 3;
+        // Ambang "connected": mesin serial memang cepat (3 dtk cukup), tapi
+        // service OCR cam satu frame-nya 2-4 dtk, ditambah deteksi full /
+        // retry perspektif saat frame transisi (keranjang digeser, angka
+        // blur) bisa 5-10 dtk tanpa posting baru. Ambang 3 dtk untuk cam
+        // membuat LED bolak-balik putus dan dipaksa 00.00 padahal service
+        // masih jalan — persis keluhan "stack di 0 lama". Cam pakai 10 dtk;
+        // data yang benar-benar basi tetap ditandai di frontend (DATA BASI),
+        // bukan disembunyikan jadi 00.00.
+        $maxAge = $source === 'cam' ? 10 : 3;
 
         return response()->json([
             'station' => $code,
