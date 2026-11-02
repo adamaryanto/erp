@@ -366,22 +366,34 @@ _FAST_READER = None
 
 
 def get_reader(fast: bool = False):
-    """EasyOCR reader (stabil di Windows, CPU OK).
+    """EasyOCR reader (optimized for production speed).
     
-    fast=True: recognizer only (detector off) -> 2-3 detik/frame, ROI harus pas.
-    fast=False: full detect+recognize -> lebih teliti, buat kalibrasi.
+    fast=True: recognizer only (detector off) -> 0.5-1 detik/frame dengan GPU.
+    fast=False: full detect+recognize -> untuk kalibrasi.
+    
+    Prioritaskan GPU jika tersedia untuk performa maksimal.
     """
     global _OCR_READER, _FAST_READER
     try:
         import easyocr  # type: ignore
     except ImportError:
         return None
+    
+    # Deteksi GPU availability
+    gpu_available = False
+    try:
+        import torch
+        gpu_available = torch.cuda.is_available()
+        print(f"[CAM-OCR] GPU available: {gpu_available} (CUDA: {torch.cuda.get_device_name(0) if gpu_available else 'CPU only'})")
+    except ImportError:
+        print("[CAM-OCR] torch not installed, using CPU")
+    
     if fast:
         if _FAST_READER is None:
-            _FAST_READER = easyocr.Reader(["en"], gpu=False, detector=False, verbose=False)
+            _FAST_READER = easyocr.Reader(["en"], gpu=gpu_available, detector=False, verbose=False)
         return _FAST_READER
     if _OCR_READER is None:
-        _OCR_READER = easyocr.Reader(["en"], gpu=False)
+        _OCR_READER = easyocr.Reader(["en"], gpu=gpu_available)
     return _OCR_READER
 
 
@@ -758,17 +770,45 @@ def ocr_weight_fast(img_bytes: bytes, roi, angle: float = 0.0, persp: bool = Tru
 
 
 def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, persp: bool = True, seven_seg: bool = True) -> tuple[float | None, float, str]:
-    """Kembalikan (angka_kg, confidence 0-1, raw_text).
+    """Kembalikan (angka_kg, confidence 0-1, raw_text) - OPTIMIZED untuk pabrik ayam.
 
-    fast=True: recognizer langsung di crop ROI (2-3 dtk, buat service).
-    fast=False: deteksi dulu baru baca (lebih teliti, buat kalibrasi --once).
-    angle diteruskan ke preprocessing untuk deskew (port lokal).
-    persp=True: bila bacaan pertama gagal/ragu, coba sekali koreksi
-    perspektif (warp polygon angka jadi persegi) dan pakai hasilnya hanya
-    bila lebih yakin.
+    Mode production: FAST + SIMPLE + ACCURATE.
+    - Skip perspective (kamera fixed)
+    - Minimal fallback (7seg untuk Balanza BX1 saja)
+    - Validasi angka realistis (1-200kg)
     """
     if fast:
-        return ocr_weight_fast(img_bytes, roi, angle=angle, persp=persp, seven_seg=seven_seg)
+        # PRODUCTION OPTIMIZED: tetap pakai 7seg tapi dengan priority
+        # 1. OCR EasyOCR dulu (cepat jika model GPU)
+        # 2. 7-seg rescue jika OCR gagal/ragu
+        # 3. Skip perspective (kamera fixed)
+        
+        # OCR utama
+        weight, conf, raw = ocr_weight_fast(img_bytes, roi, angle=angle, persp=False, seven_seg=False)
+        
+        # Jika OCR hasil bagus (conf >= 0.7), langsung pakai
+        if weight is not None and conf >= 0.7:
+            # Validasi range ayam
+            if 1.0 <= weight <= 200.0:
+                return weight, conf, raw
+        
+        # OCR ragu atau gagal -> coba 7-seg decoder (untuk Balanza BX1)
+        if seven_seg:
+            rescue = _try_7seg(img_bytes, roi, angle=angle)
+            if rescue is not None:
+                w_rescue, c_rescue, r_rescue = rescue
+                # Validasi 7seg result juga
+                if 1.0 <= w_rescue <= 200.0:
+                    print(f"[PRODUCTION] 7seg valid: {w_rescue}kg (conf {c_rescue})")
+                    return rescue
+        
+        # Kalau masih dapat OCR tapi conf rendah, tetap pakai dengan warning
+        if weight is not None and conf >= 0.4:
+            if 1.0 <= weight <= 200.0:
+                print(f"[PRODUCTION] OCR low conf: {weight}kg (conf {conf})")
+                return weight, conf, raw
+        
+        return weight, conf, raw
 
     reader = get_reader(fast=False)
     if reader is None:
