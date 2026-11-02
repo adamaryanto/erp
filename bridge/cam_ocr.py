@@ -1740,13 +1740,25 @@ def main() -> int:
                     "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
             elif is_jump and not confirmed:
-                ocr_fail_streak += 1
-                print(f"[{ts}] OCR outlier ditahan: {weight:.2f} kg (median {median_w:.2f}, conf {conf:.2f}) raw={raw[:60]!r}")
+                # PRODUCTION MODE: langsung terima perubahan berat (ayam cepat turun/naik)
+                # Skip outlier detection untuk respons cepat
+                ocr_fail_streak = 0
+                pending_jump = None
+                recent_ok.append((now_ts, weight))
+                if len(recent_ok) > 12:
+                    recent_ok = recent_ok[-12:]
+                print(f"[{ts}][{station}] OCR JUMP: {weight:.2f} kg (median {median_w:.2f}, conf {conf:.2f}) raw={raw[:60]!r}")
+                persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
+                if persist_now:
+                    last_db_post = time.time()
                 post_reading(args.api_base, {
                     "station": station,
                     "weighed_at": weighed_at,
-                    "ocr_weight": None,
-                    "raw_payload": {"ocr_raw": f"{raw[:160]} [outlier median={median_w:.2f}]", "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
+                    "image_path": image_path,
+                    "ocr_weight": weight,
+                    "ocr_conf": round(float(conf), 3),
+                    "persist": persist_now,
+                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
             elif not args.simulate and conf < args.min_conf and not agree and not confirmed:
                 ocr_fail_streak += 1
