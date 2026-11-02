@@ -52,6 +52,12 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median as _median
+
+try:
+    import msvcrt  # Windows: cegah dua daemon stasiun sama jalan bersamaan.
+except ImportError:
+    msvcrt = None
 
 try:
     import requests
@@ -86,6 +92,37 @@ def parse_roi(s: str) -> tuple[float, float, float, float]:
     if not (0 <= x < 1 and 0 <= y < 1 and 0 < w <= 1 and 0 < h <= 1):
         raise argparse.ArgumentTypeError("--roi harus fraksi 0-1")
     return (x, y, w, h)
+
+
+_INSTANCE_LOCK_FH = None
+
+
+def acquire_instance_lock(pid_file: str, wait_sec: float = 25.0) -> bool:
+    """Kunci satu instance per stasiun.
+
+    startService() memakai heartbeat untuk cek "sudah jalan?". Saat model
+    EasyOCR di-load (8-20 dtk) heartbeat belum ada, jadi klik/restart kedua
+    bisa men-spawn proses dobel. Dua daemon menulis log/status/ROI yang sama
+    -> angka kacau. File .lock tidak pernah dihapus web; lock dilepas OS saat
+    proses mati.
+    """
+    global _INSTANCE_LOCK_FH
+    if not pid_file or msvcrt is None:
+        return True
+    lock_path = Path(str(pid_file) + ".lock")
+    deadline = time.time() + wait_sec
+    while True:
+        fh = open(lock_path, "a+b")
+        try:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            _INSTANCE_LOCK_FH = fh
+            return True
+        except OSError:
+            fh.close()
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.5)
 
 
 _SESSION = None
@@ -1380,6 +1417,11 @@ def main() -> int:
         except OSError:
             pass
 
+    # Satu daemon per stasiun. --once (kalibrasi) boleh jalan berdampingan.
+    if not args.once and not acquire_instance_lock(args.pid_file):
+        print("[CAM-OCR] Instance lain masih jalan (lock gagal) -> keluar.")
+        return 0
+
     # Tulis PID duluan (sebelum load model yg lama) biar tombol web
     # langsung tahu service hidup.
     if args.pid_file:
@@ -1388,6 +1430,14 @@ def main() -> int:
         except OSError as e:
             print(f"[CAM-OCR] pid-file gagal: {e}")
 
+    # Heartbeat langsung: load model 8-20 dtk. Tanpa ini web mengira service
+    # mati lalu men-spawn daemon kedua di tengah load.
+    if args.heartbeat_file:
+        try:
+            Path(args.heartbeat_file).touch()
+        except OSError:
+            pass
+
     write_status(args.status_file, "starting", "Menyiapkan service...")
     fail_streak = 0
     last_db_post = 0.0
@@ -1395,6 +1445,10 @@ def main() -> int:
     # diterima KALAU frame sebelumnya membaca angka yang sama (±0.30 kg).
     # Lebih cepat & tetap akurat: misread acak tidak akan dua kali kebetulan sama.
     recent_ok: list[tuple[float, float]] = []
+    pending_jump: tuple[float, float, float, str] | None = None
+    JUMP_MIN_KG = 1.5
+    JUMP_MAX_PCT = 0.06
+    JUMP_CONFIRM_SEC = 3.0
     CAMERA_FAIL_AFTER = 5
     MODEL_RETRY_SEC = 60.0
 
@@ -1613,15 +1667,25 @@ def main() -> int:
                 (save_dir / fname).write_bytes(img)
                 image_path = f"cam/{fname}"
 
-            # Konsistensi temporal (hanya untuk bacaan valid).
             agree = False
+            is_jump = False
+            confirmed = False
+            median_w = None
+            now_ts = time.time()
             if weight is not None:
-                now_ts = time.time()
-                recent_ok = [(t, w) for (t, w) in recent_ok if now_ts - t <= 2.0]
-                agree = any(abs(w - weight) <= 0.30 for _t, w in recent_ok)
-                recent_ok.append((now_ts, weight))
-                if len(recent_ok) > 20:
-                    recent_ok = recent_ok[-20:]
+                recent_ok = [(t, w) for (t, w) in recent_ok if now_ts - t <= 10.0]
+                if pending_jump is not None and now_ts - pending_jump[1] > JUMP_CONFIRM_SEC:
+                    pending_jump = None
+                agree = any((now_ts - t) <= 3.0 and abs(w - weight) <= 0.30 for t, w in recent_ok)
+                if recent_ok:
+                    median_w = float(_median([w for _t, w in recent_ok]))
+                    jump_limit = max(JUMP_MIN_KG, abs(median_w) * JUMP_MAX_PCT)
+                    is_jump = abs(weight - median_w) > jump_limit
+                if is_jump and pending_jump is not None:
+                    prev_w, prev_at, _prev_cf, _prev_raw = pending_jump
+                    confirmed = abs(weight - prev_w) <= 0.30 and (now_ts - prev_at) <= JUMP_CONFIRM_SEC
+                if is_jump and not confirmed:
+                    pending_jump = (weight, now_ts, conf, raw)
 
             if weight is None:
                 ocr_fail_streak += 1
@@ -1635,7 +1699,16 @@ def main() -> int:
                     "ocr_weight": None,
                     "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
-            elif not args.simulate and conf < args.min_conf and not agree:
+            elif is_jump and not confirmed:
+                ocr_fail_streak += 1
+                print(f"[{ts}] OCR outlier ditahan: {weight:.2f} kg (median {median_w:.2f}, conf {conf:.2f}) raw={raw[:60]!r}")
+                post_reading(args.api_base, {
+                    "station": station,
+                    "weighed_at": weighed_at,
+                    "ocr_weight": None,
+                    "raw_payload": {"ocr_raw": f"{raw[:160]} [outlier median={median_w:.2f}]", "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
+                })
+            elif not args.simulate and conf < args.min_conf and not agree and not confirmed:
                 ocr_fail_streak += 1
                 # Keyakinan rendah DAN tidak ada bacaan serupa di frame
                 # sebelumnya: buang. Kalau dua frame berturut-turut membaca
@@ -1649,6 +1722,12 @@ def main() -> int:
                 })
             else:
                 ocr_fail_streak = 0
+                if confirmed:
+                    print(f"[{ts}] Lompatan dikonfirmasi: {weight:.2f} kg (median {median_w:.2f})")
+                pending_jump = None
+                recent_ok.append((now_ts, weight))
+                if len(recent_ok) > 12:
+                    recent_ok = recent_ok[-12:]
                 extra = "" if args.simulate else f" {dt:.1f}s"
                 print(f"[{ts}][{station}] OCR: {weight:.2f} kg (conf {conf:.2f}){extra} raw={raw[:60]!r}")
                 # Live cache SELALU diupdate (LED cepat); insert DB dibatasi

@@ -59,8 +59,8 @@
                 <div id="ledPanel" data-mode="{{ $mode ?? 'mesin' }}" class="bg-[#050B07] border-2 border-slate-800 rounded-xl p-5 shadow-lg">
                     <div class="flex items-center justify-between border-b border-emerald-950 pb-2 mb-3">
                         <div class="flex items-center gap-2">
-                            <span class="w-2.5 h-2.5 rounded-full" :class="canWeigh ? (isCamMode ? 'bg-violet-400 animate-pulse' : 'bg-emerald-400 animate-pulse') : 'bg-slate-700'"></span>
-                            <span class="font-led text-xs font-bold uppercase tracking-wider" :class="canWeigh ? (isCamMode ? 'text-violet-300' : 'text-emerald-400') : 'text-slate-600'" x-text="isCamMode ? (svcRunning ? 'LIVE CAMERA OCR • ACTIVE' : 'CAMERA MODE • INPUT MANUAL') : 'LIVE DIGITAL INDICATOR • SENSOR SCALE 01'"></span>
+                            <span class="w-2.5 h-2.5 rounded-full" :class="canWeigh ? (isCamMode ? (svcState === 'camera_fail' ? 'bg-amber-400 animate-pulse' : 'bg-violet-400 animate-pulse') : 'bg-emerald-400 animate-pulse') : 'bg-slate-700'"></span>
+                            <span class="font-led text-xs font-bold uppercase tracking-wider" :class="canWeigh ? (isCamMode ? (svcState === 'camera_fail' ? 'text-amber-300' : 'text-violet-300') : 'text-emerald-400') : 'text-slate-600'" x-text="isCamMode ? (svcState === 'camera_fail' ? 'KAMERA OFFLINE • CEK KABEL/WIFI' : (svcRunning ? 'LIVE CAMERA OCR • ACTIVE' : 'CAMERA MODE • INPUT MANUAL')) : 'LIVE DIGITAL INDICATOR • SENSOR SCALE 01'"></span>
                             <span id="ledMsg" class="font-led text-[11px] font-bold uppercase tracking-wider text-amber-400"></span>
                         </div>
                         <span class="text-[10px] font-mono text-slate-500" id="ledAge"></span>
@@ -249,6 +249,7 @@
                 svcFresh: null,
                 svcRaw: '',
                 svcDetail: '',
+                svcState: '',
                 svcBusy: false,
                 camAuto: false,
                 lastAutoTry: 0,
@@ -661,6 +662,8 @@
                         this.svcFresh = !!data.fresh;
                         this.svcRaw = data.last_raw || '';
                         this.svcDetail = data.svc_detail || '';
+                        this.svcState = data.svc_state || '';
+                        window.__svcState = this.svcState;
                         if (typeof data.cam_auto === 'boolean') this.camAuto = data.cam_auto;
                         // Mode AUTO: service mati -> nyalakan lagi diam-diam (max 1x per 30 dtk,
                         // jeda 120 dtk setelah STOP manual biar tidak rebutan).
@@ -1360,6 +1363,16 @@
                 var hasWeight = d.weight !== null && d.weight !== undefined;
                 var val = hasWeight ? Number(d.weight) : null;
                 var age = (d.age_seconds !== null && d.age_seconds !== undefined) ? Number(d.age_seconds) : null;
+                var camOffline = mode === 'cam' && window.__svcState === 'camera_fail';
+                if (camOffline) {
+                    __ledSet('ledValue', '--.--');
+                    __ledSet('ledMsg', 'KAMERA OFFLINE');
+                    __ledSet('ledAge', '');
+                    var offlineBox = document.getElementById('ledStatus');
+                    if (offlineBox) offlineBox.innerHTML = __BADGE.off;
+                    __calcEkor();
+                    return;
+                }
                 // DUA TINGKAT (koreksi perbaikan sebelumnya): backend bilang
                 // "connected" sampai umur 10 dtk supaya LED tidak dipaksa 0,
                 // tapi itu BUKAN berarti angkanya masih segar. Kasus nyata:

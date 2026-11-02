@@ -486,6 +486,26 @@ class CamReadingController extends Controller
         return $pid > 0 ? $pid : null;
     }
 
+    /**
+     * Cek PID masih hidup (tasklist). Dipakai stopService supaya file
+     * pelacakan tidak dihapus saat proses lama masih berjalan.
+     */
+    private function pidAlive(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+        try {
+            $proc = new Process(['C:\Windows\System32\tasklist.exe', '/FI', 'PID eq '.$pid, '/NH']);
+            $proc->setTimeout(5);
+            $proc->run();
+
+            return str_contains($proc->getOutput(), (string) $pid);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     private function pythonBin(): string
     {
         // pythonw = tanpa console window (cocok buat daemon dari web).
@@ -591,9 +611,10 @@ class CamReadingController extends Controller
         $statFile = $this->statusFile($station);
         $logFile = storage_path('app/cam_log_'.$safe.'.txt');
         @unlink($stopFile);
-        @unlink($pidFile);
-        @unlink($beatFile);
-        @unlink($statFile);
+        // JANGAN hapus pid/beat/status di sini. Kalau instance lama masih
+        // hidup (mis. sedang load model) dan lock menolak instance baru,
+        // file lama harus tetap ada supaya heartbeat + tombol STOP valid.
+        // Instance baru menimpa ketiganya sendiri setelah lock didapat.
 
         // Spawn: "start /B" (detach, kembali langsung). Quoting diserahkan ke
         // Symfony (jangan dirakit manual — itu sumber popup kemarin).
@@ -611,6 +632,10 @@ class CamReadingController extends Controller
                 '--interval', $interval,
                 '--min-conf', (string) ($settings->ocr_min_conf ?? 0.4),
                 '--fast', '--no-save', '--quiet',
+                // ROI manual operator harus dihormati. Auto-track terbukti
+                // bergeser ke text taskbar Windows (ROI y~0.56) lalu membaca
+                // sampah ('3e82'), jadi jangan biarkan daemon menimpa ROI.
+                '--no-track',
                 '--stop-file', $stopFile,
                 '--pid-file', $pidFile,
                 '--heartbeat-file', $beatFile,
@@ -674,6 +699,7 @@ class CamReadingController extends Controller
         @file_put_contents($this->stopFile($station), now()->toIso8601String());
 
         $pid = $this->pidFromFile($station);
+        $stillAlive = false;
         if ($pid) {
             try {
                 // Timeout pendek (8 dtk): taskkill cuma pengaman, stop-flag
@@ -684,13 +710,29 @@ class CamReadingController extends Controller
             } catch (\Throwable $e) {
                 // Abaikan, stop-flag sudah cukup (terbukti ampuh).
             }
-            @unlink($this->pidFile($station));
+            // Tunggu benar-benar mati (maks 5 dtk). Kalau masih hidup,
+            // JANGAN hapus pid/beat/status: kalau dihapus, proses lama jadi
+            // hantu yang tidak bisa di-STOP dan start berikutnya bisa dobel.
+            for ($i = 0; $i < 20; $i++) {
+                $stillAlive = $this->pidAlive($pid);
+                if (! $stillAlive) {
+                    break;
+                }
+                usleep(250000);
+            }
+            if (! $stillAlive) {
+                @unlink($this->pidFile($station));
+                @unlink($this->heartbeatFile($station));
+                @unlink($this->statusFile($station));
+            }
+        } else {
+            @unlink($this->heartbeatFile($station));
+            @unlink($this->statusFile($station));
         }
-        @unlink($this->heartbeatFile($station));
-        @unlink($this->statusFile($station));
         Cache::forget($this->serviceKey($station));
 
-        return response()->json(['status' => 'stopped', 'station' => $station, 'pid' => $pid]);
+        return response()->json(['status' => $stillAlive ? 'stopping' : 'stopped',
+            'station' => $station, 'pid' => $pid, 'still_alive' => $stillAlive]);
     }
 
     /**

@@ -17,6 +17,7 @@ Route::get('/', [WeighingLiveController::class, 'index'])->name('home');
 Route::get('/timbang-cam', [WeighingLiveController::class, 'cam'])->name('cam.index');
 // Proxy pratinjau: RTSP/MJPEG → 1 frame JPEG (browser tak bisa putar RTSP).
 Route::get('/timbang-cam/snapshot', [CamReadingController::class, 'liveSnapshot'])->name('cam.snapshot');
+Route::view('/timbang-cam/test-display', 'weighing.test-display')->name('cam.test-display');
 
 // Auth routes (disimpan untuk nanti; untuk sekarang semua halaman publik tanpa login).
 Route::get('/login', [AuthController::class, 'showLogin'])->name('login');

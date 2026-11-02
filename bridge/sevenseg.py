@@ -146,6 +146,13 @@ def decode_digit_grid(grid, box, polarity: str, peak: float):
     (satu bar vertikal, bukan slot 7-segmen penuh) — region segmen
     normal terlalu tipis untuk diukur (1-2 px, blur langsung merusak),
     jadi yang diukur hanya ada/tidaknya bar vertikal di tengah box.
+    Fallback (v5): bila bar tengah redup (bukan "1"), box itu bisa
+    jadi pecahan digit yang terpotong terlalu sempit oleh split
+    (mis. "6" yang terpotong jadi w/h 0.28) — pecahan itu masih
+    mengandung segmen 7-segmen lengkap, jadi ukur sebagai digit normal
+    di bawah. "1" asli yang redup akan gagal juga di pengukuran normal
+    (hanya segmen g yang nyala, bukan digit sah), jadi fallback ini
+    tidak pernah menciptakan digit palsu.
     """
     _x0, _y0, _x1, _y1 = (float(v) for v in box)
     _w, _h = _x1 - _x0, _y1 - _y0
@@ -157,7 +164,7 @@ def decode_digit_grid(grid, box, polarity: str, peak: float):
         if s >= _SCORE_ON:
             return "1", max(0.0, min(1.0, (s - _SCORE_ON) / 0.30)), {"b", "c"}, \
                 {"a": 0.0, "b": s, "c": s, "d": 0.0, "e": 0.0, "f": 0.0, "g": 0.0}, ""
-        return None, 0.0, set(), {}, "narrow-bukan-bar"
+        # Bukan "1" terang: jatuh ke pengukuran 7-segmen normal di bawah.
     scores = measure_segment_scores(grid, box, polarity, peak)
     on_set = set()
     min_margin = 1.0
@@ -356,7 +363,7 @@ def decode_grid_value(grid, digit_boxes, dot_boxes, polarity: str, peak: float):
 # gambar gagal — pemanggil (daemon) tidak pernah mati karena modul ini.
 # ---------------------------------------------------------------------------
 
-__version__ = "2026-10-25-v3-bg"
+__version__ = "2026-10-25-v5-split"
 
 
 def _crop_gray_color(img_bytes: bytes, roi, angle: float = 0.0):
@@ -445,6 +452,259 @@ def _boxes_from_mask(mask):
     return boxes
 
 
+def split_wide_boxes(digit_boxes, mask_bool, valley_frac=0.20):
+    """Pecah box digit yang terlalu lebar (digit menyatu karena glow /
+    celah antar digit rapat) jadi beberapa box, lewat lembah kolom mask.
+
+    Dipakai HANYA sebagai rescue setelah decode tanpa split gagal, jadi
+    font normal (box w/h <= 0.75) tidak pernah tersentuh. Box lebar
+    (w > 0.75*h; digit tunggal normal w/h ~0.55-0.65, gabungan 2 digit
+    w/h ~0.9+) dicari lembahnya: kolom-kolom dengan isi mask < 20%
+    tinggi box, lebar >= 2 kolom, dengan puncak >= 50% tinggi di kedua
+    sisi. Ambang 20% (bukan 30%) sengaja: kolom lubang tengah "0"/"6"
+    isinya ~27-28% (bar atas+bawah), jadi di 30% digit itu ikut
+    terbelah, sedangkan celah antar digit asli (latar+glow saja,
+    ~0-13%) tetap di bawah 20% dan tetap terpecah. Kalaupun sebuah
+    digit terbelah, validasi decode (try_split_decode) akan membuangnya
+    karena pecahannya bukan digit sah. mask_bool: array bool 2D dalam
+    koordinat yang sama dengan box. valley_frac: ambang lembah
+    (default 0.20); try_split_decode mencoba 0.20 dan 0.30 per box
+    (v5, karena pasangan digit yang berbeda bisa butuh ambang berbeda
+    dalam satu gambar yang sama). Mengembalikan list baru bila ada
+    yang terpecah, atau list asal bila tidak ada.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return digit_boxes
+    if mask_bool is None or len(digit_boxes) == 0:
+        return digit_boxes
+    try:
+        mh, mw = mask_bool.shape[:2]
+    except Exception:
+        return digit_boxes
+    out = []
+    changed = False
+    for b in digit_boxes:
+        x0, y0, x1, y1 = (float(v) for v in b)
+        w, h = x1 - x0, y1 - y0
+        if h <= 0 or w <= 0.75 * h:
+            out.append(b)
+            continue
+        ix0, ix1 = max(0, int(round(x0))), min(mw, int(round(x1)))
+        iy0, iy1 = max(0, int(round(y0))), min(mh, int(round(y1)))
+        if ix1 - ix0 < 4 or iy1 - iy0 < 4:
+            out.append(b)
+            continue
+        try:
+            colsum = mask_bool[iy0:iy1, ix0:ix1].sum(axis=0)
+        except Exception:
+            out.append(b)
+            continue
+        low = colsum < valley_frac * h
+        valleys = []
+        i, n = 0, len(low)
+        while i < n:
+            if low[i]:
+                j = i
+                while j < n and low[j]:
+                    j += 1
+                if j - i >= 2:
+                    valleys.append((i, j))
+                i = j
+            else:
+                i += 1
+        if not valleys:
+            out.append(b)
+            continue
+        cuts = []
+        for (a, z) in valleys:
+            left_peak = colsum[:a].max() if a > 0 else 0
+            right_peak = colsum[z:].max() if z < n else 0
+            # Lembah yang sah = celah ANTAR digit, bukan lubang TENGAH
+            # digit: celah itu SEMPIT (<= max(4, 10% lebar box)) dan
+            # diapit puncak di kedua sisi. Ambang puncak 0.25*h (bukan
+            # 0.50*h): tepi digit seperti "2" tidak punya bar vertikal
+            # penuh (tanpa segmen c bawah), jadi puncaknya hanya ~30%
+            # tinggi — ambang 0.50 menolak celah yang benar. Lubang
+            # tengah "0"/"6" (lebar 8-30 kolom) ditolak oleh filter
+            # lebar, bukan oleh puncak, sehingga celah sempit tetap lolos
+            # meski puncaknya tidak setinggi bar penuh.
+            if (left_peak >= 0.25 * h and right_peak >= 0.25 * h
+                    and (z - a) <= max(4, 0.10 * w)):
+                # Potong di TENGAH lembah, bukan di kolom minimum:
+                # minimum bisa di tepi lembah (dekat digit kanan),
+                # sehingga box kiri ikut menelan piksel digit kanan
+                # dan segmennya terkontaminasi (kasus "2"+"6" di 26.50:
+                # potong di 59 membuat c "2" ikut nyala 0.54).
+                cuts.append((a + z - 1) // 2)
+        if not cuts:
+            out.append(b)
+            continue
+        parts = []
+        prev = 0
+        for c in cuts:
+            parts.append((prev, c))
+            prev = c + 1
+        parts.append((prev, n))
+        made = []
+        for (pa, pz) in parts:
+            if pz - pa < 3:
+                continue
+            # Batas box dari bounding box mask per pecahan (bukan
+            # diwarisi parent, bukan kolom padat): digit sebaris di foto
+            # miring TIDAK sama tinggi (kasus 26.50: "2" 53 px vs "6"
+            # 76 px — bukan artefak mask, tapi geometri nyata di foto),
+            # sehingga warisan y parent menggeser semua region segmen
+            # "2" (g/d/e ikut mati). Kolom padat juga terbukti memotong
+            # bar tepi digit yang tipis (kasus "5": f ikut hilang).
+            # Potongan di tengah celah sudah cukup mencegah piksel
+            # tetangga masuk; bounding box mask per pecahan adalah
+            # yang paling setia pada piksel digit itu sendiri.
+            sub = mask_bool[iy0:iy1, ix0 + pa:ix0 + pz]
+            ys, xs = np.where(sub)
+            if len(xs) == 0:
+                continue
+            sx0 = ix0 + pa + int(xs.min())
+            sx1 = ix0 + pa + int(xs.max()) + 1
+            sy0 = iy0 + int(ys.min())
+            sy1 = iy0 + int(ys.max()) + 1
+            if sy1 - sy0 >= 4 and sx1 - sx0 >= 3:
+                made.append((float(sx0), float(sy0), float(sx1), float(sy1)))
+        if len(made) >= 2:
+            out.extend(made)
+            changed = True
+        else:
+            out.append(b)
+    return out if changed else digit_boxes
+
+
+def split_one_wide_box(box, mask_bool, valley_frac=0.20):
+    """Pecah SATU box (lihat split_wide_boxes) -> list sub-box atau [box]."""
+    return split_wide_boxes([box], mask_bool, valley_frac)
+
+
+def try_split_decode(score, base_digits, base_dots, mask_bool):
+    """Coba decode dengan digit hasil split, termasuk kombinasi ambang
+    per-box (v5).
+
+    Mengembalikan (val, cf, raw, detail) bila decode berhasil, atau None.
+    Satu ambang tidak cukup: di satu gambar yang sama, pasangan digit
+    yang berbeda bisa butuh ambang berbeda (celah "2"+"6" terisi glow
+    ~20-30% sehingga butuh ambang 30% untuk terpecah, sementara lubang
+    tengah "0" isinya ~27% sehingga di ambang 30% ikut terbelah).
+    Karena itu tiap box lebar dicoba dengan varian [tidak dipecah,
+    pecah@20%, pecah@30%] dan semua kombinasinya dicoba (dibatasi 64
+    kombinasi). Pengaman sama seperti sebelumnya: semua sub-box
+    setinggi digit (>= 0.5 tinggi maksimum) harus selamat sebagai digit
+    setelah klasifikasi ulang, dan decode harus menghasilkan digit sah
+    + titik tepat satu — jadi kombinasi yang salah gugur sendiri,
+    tidak pernah jadi bacaan palsu.
+    """
+    try:
+        import itertools
+    except Exception:
+        return None
+    if mask_bool is None or not base_digits:
+        return None
+    try:
+        wide_idx = []
+        fixed = []
+        for i, b in enumerate(base_digits):
+            x0, y0, x1, y1 = (float(v) for v in b)
+            if (y1 - y0) > 0 and (x1 - x0) > 0.75 * (y1 - y0):
+                wide_idx.append(i)
+            else:
+                fixed.append(b)
+        if not wide_idx:
+            return None
+        variants = []
+        for i in wide_idx:
+            b = base_digits[i]
+            opts = []
+            seen = set()
+            for cand in ([b],
+                         split_one_wide_box(b, mask_bool, 0.20),
+                         split_one_wide_box(b, mask_bool, 0.30)):
+                key = tuple(cand)
+                if key not in seen:
+                    seen.add(key)
+                    opts.append(cand)
+            variants.append(opts)
+        combos = list(itertools.product(*variants))
+        if len(combos) > 64:
+            combos = combos[:64]
+        base_tuple = tuple(base_digits)
+        for combo in combos:
+            combined = list(fixed)
+            for parts in combo:
+                combined.extend(parts)
+            combined_sorted = sorted(combined, key=lambda d: float(d[0]))
+            if tuple(combined_sorted) == base_tuple:
+                continue
+            try:
+                nd, ndt = classify_boxes(list(combined_sorted) + list(base_dots))
+            except Exception:
+                continue
+            try:
+                max_h = max(float(d[3]) - float(d[1]) for d in combined_sorted)
+                digit_sized = [d for d in combined_sorted if (float(d[3]) - float(d[1])) >= 0.5 * max_h]
+                if len(nd) != len(digit_sized):
+                    continue
+                val, cf, raw, detail = decode_grid_value(score, nd, ndt, "bright", 1.0)
+                if val is not None:
+                    return val, cf, raw, detail
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def main_digit_row(digit_boxes, dots):
+    """Pilih baris digit utama, buang baris lain (v5).
+
+    ROI yang mencakup tulisan "kg" di bawah digit membuat "kg" ikut
+    terhitung sebagai digit dan merusak decode. Baris utama = baris
+    dengan box terbanyak (seri -> median tinggi terbesar, lewat
+    _row_groups: sebaris bila overlap vertikal >=40% dan gap wajar).
+    Titik yang tidak sejajar bawah baris utama atau di luar rentang-x
+    baris ikut dibuang. Bila hanya satu baris, kembalikan as-is.
+    Mengembalikan (row_digits, row_dots).
+    """
+    if not digit_boxes:
+        return digit_boxes, dots
+    try:
+        groups = _row_groups(digit_boxes)
+    except Exception:
+        return digit_boxes, dots
+    if len(groups) <= 1:
+        return digit_boxes, dots
+    try:
+        def row_key(g):
+            hs = sorted(float(b[3]) - float(b[1]) for b in g)
+            med_h = hs[len(hs) // 2] if hs else 0
+            return (len(g), med_h)
+        best = max(groups, key=row_key)
+        best_ids = set(id(b) for b in best)
+        row_digits = [b for b in digit_boxes if id(b) in best_ids]
+        if not row_digits:
+            return digit_boxes, dots
+        hs = sorted(float(b[3]) - float(b[1]) for b in row_digits)
+        digit_h = hs[len(hs) // 2]
+        y1s = sorted(float(b[3]) for b in row_digits)
+        row_y1 = y1s[len(y1s) // 2]
+        rx0 = min(float(b[0]) for b in row_digits)
+        rx1 = max(float(b[2]) for b in row_digits)
+        row_dots = [d for d in dots
+                    if abs(float(d[3]) - row_y1) <= 0.3 * digit_h
+                    and float(d[0]) >= rx0 - digit_h
+                    and float(d[2]) <= rx1 + digit_h]
+        return row_digits, row_dots
+    except Exception:
+        return digit_boxes, dots
+
+
 def decode_roi(img_bytes: bytes, roi, angle: float = 0.0):
     """Baca angka 7-segmen dari satu ROI -> (nilai|None, conf, raw, detail).
 
@@ -466,6 +726,18 @@ def decode_roi(img_bytes: bytes, roi, angle: float = 0.0):
     (~0.44) harus masuk mask, sementara latar gradien (~0.22) dan
     ghost (~0.29) tetap di bawahnya. Tiap kanal dicoba dengan dua
     strategi slot: closing 5x5, lalu tanpa closing + grouping segmen.
+    Rescue split (v4): kalau decode gagal dan ada box digit yang terlalu
+    lebar (digit menyatu karena glow / celah antar digit rapat, seperti
+    font baru di screenshot 26.50 — box 76/62 px padahal digit tunggal
+    ~30 px), box itu dipecah di lembah kolom mask lalu decode diulang.
+    Pecahan yang salah (mis. "0" terbelah) otomatis gugur karena
+    pecahannya bukan digit sah, jadi split tidak pernah menciptakan
+    bacaan palsu — hanya membuka jalan buat bacaan yang benar.
+    v5: split mencoba kombinasi ambang per-box (tiap box lebar dicoba
+    tidak dipecah / pecah@20% / pecah@30%, karena pasangan digit yang
+    berbeda bisa butuh ambang berbeda dalam satu gambar yang sama),
+    dan decode hanya memakai baris digit utama (baris lain seperti
+    "kg" di bawah digit dibuang, supaya tidak ikut terhitung digit).
     """
     got = _crop_gray_color(img_bytes, roi, angle)
     if got is None:
@@ -525,25 +797,62 @@ def decode_roi(img_bytes: bytes, roi, angle: float = 0.0):
     if not scores_to_try:
         scores_to_try.append(("gray-peak-dark", np.clip(1.0 - gray.astype(float) / max(peak, 1.0), 0.0, 1.0), 0.5))
     last_detail = "tidak ada kanal"
+    last_detail = "tidak ada kanal"
     for _name, score, thresh in scores_to_try:
         mask = (score >= thresh).astype(np.uint8) * 255
+        mask_bool = mask > 0
+        # Dua sumber slot: closing (segmen menyatu, tapi titik bisa ikut
+        # tertelan + digit bisa menyatu) dan grouping (titik selamat,
+        # tapi segmen runcing tidak menggumpal). Kandidat decode mencoba
+        # kombinasi keduanya, karena satu jalur saja sering hanya punya
+        # separuh: digit dari closing+split, titik dari grouping.
         try:
             closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-            digits, dots = classify_boxes(_boxes_from_mask(closed))
-            val, cf, raw, detail = decode_grid_value(score, digits, dots, "bright", 1.0)
-            if val is not None:
-                return val, cf, raw, detail
-            last_detail = detail
+            c_digits, c_dots = classify_boxes(_boxes_from_mask(closed))
         except Exception:
-            pass
+            c_digits, c_dots = [], []
         try:
-            digits, dots = group_segment_boxes(_boxes_from_mask(mask))
-            val, cf, raw, detail = decode_grid_value(score, digits, dots, "bright", 1.0)
-            if val is not None:
-                return val, cf, raw, detail
-            last_detail = detail
-        except Exception as e:
-            last_detail = f"decoder gagal: {e}"
+            g_digits, g_dots = group_segment_boxes(_boxes_from_mask(mask))
+        except Exception:
+            g_digits, g_dots = [], []
+        # Titik gabungan (dedup berdasarkan posisi, biar tidak terhitung dua).
+        merged_dots = list(c_dots)
+        for d in g_dots:
+            if not any(abs(d[0] - m[0]) <= 5 and abs(d[3] - m[3]) <= 5 for m in merged_dots):
+                merged_dots.append(d)
+        # Filter baris utama (v5): buang baris lain seperti "kg" di bawah
+        # digit, sebelum decode maupun split.
+        c_digits, c_dots = main_digit_row(c_digits, c_dots)
+        g_digits, g_dots = main_digit_row(g_digits, g_dots)
+        _, merged_c = main_digit_row(c_digits, merged_dots)
+        _, merged_g = main_digit_row(g_digits, merged_dots)
+        candidates = [(c_digits, c_dots), (g_digits, g_dots)]
+        # Split rescue untuk digit menyatu (closing maupun grouping),
+        # plus kombinasi silang digit closing+split + titik grouping.
+        for _base_digits, _base_dots, _merged in ((c_digits, c_dots, merged_c),
+                                                  (g_digits, g_dots, merged_g)):
+            try:
+                r = try_split_decode(score, _base_digits, _base_dots, mask_bool)
+                if r is not None:
+                    return r[0], r[1], r[2], r[3] + " split"
+                r = try_split_decode(score, _base_digits, _merged, mask_bool)
+                if r is not None:
+                    return r[0], r[1], r[2], r[3] + " split"
+            except Exception:
+                pass
+        seen = set()
+        for digits, dots in candidates:
+            key = (tuple(digits), tuple(dots))
+            if key in seen or not digits:
+                continue
+            seen.add(key)
+            try:
+                val, cf, raw, detail = decode_grid_value(score, digits, dots, "bright", 1.0)
+                if val is not None:
+                    return val, cf, raw, detail
+                last_detail = detail
+            except Exception as e:
+                last_detail = f"decoder gagal: {e}"
     return None, 0.0, "", f"decoder: {last_detail}"
 
 
