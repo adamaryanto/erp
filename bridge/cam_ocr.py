@@ -397,11 +397,22 @@ def get_reader(fast: bool = False):
     return _OCR_READER
 
 
-def pick_number(texts: list[tuple[str, float]]) -> tuple[float | None, float, str]:
-    """Cari angka kg dari daftar (teks, conf)."""
+def pick_number(texts: list) -> tuple[float | None, float, str]:
+    """Cari angka kg dari daftar hasil OCR (bisa bbox,text,conf atau text,conf)."""
     best: tuple[float, float] | None = None
-    raw_all = " ".join(t for t, _ in texts)
-    for text, conf in texts:
+    
+    # Parse results - EasyOCR recognize() returns (bbox, text, conf)
+    parsed_texts = []
+    for item in texts:
+        if len(item) == 3:  # (bbox, text, conf)
+            _, text, conf = item
+            parsed_texts.append((text, float(conf)))
+        elif len(item) == 2:  # (text, conf) - legacy format
+            text, conf = item
+            parsed_texts.append((text, float(conf)))
+    
+    raw_all = " ".join(t for t, _ in parsed_texts)
+    for text, conf in parsed_texts:
         # Display 7-segmen sering kebaca berjarak ("24 . 92") → rapatkan dulu.
         t = text.replace(",", ".").replace(" ", "")
         # Titik desimal kecil sering hilang ("22 85") atau kebaca strip
@@ -1707,79 +1718,9 @@ def main() -> int:
                 (save_dir / fname).write_bytes(img)
                 image_path = f"cam/{fname}"
 
-            # PRODUCTION MODE: Accept all weight changes immediately
-            # No jump detection, no median confirmation, no outlier filtering
-            now_ts = time.time()
-            if weight is not None:
-                # Clear history if weight change > 5kg (significant change)
-                if recent_ok:
-                    last_weight = recent_ok[-1][1] if recent_ok else weight
-                    if abs(weight - last_weight) > 5.0:
-                        recent_ok = [(now_ts, weight)]  # Reset history for big change
-                        print(f"[FAST] Weight change {last_weight}→{weight}kg - reset history")
-                    else:
-                        recent_ok.append((now_ts, weight))
-                        if len(recent_ok) > 6:  # Keep only 6 readings (3x lebih pendek)
-                            recent_ok = recent_ok[-6:]
-                else:
-                    recent_ok = [(now_ts, weight)]
-                
-                pending_jump = None  # No pending jumps
-
             if weight is None:
                 ocr_fail_streak += 1
                 print(f"[{ts}] OCR gagal (raw={raw[:80]!r}). Cek --roi / cahaya / fokus.")
-                
-                # DEBUG: Save failed crop untuk analisis
-                try:
-                    import cv2
-                    import numpy as np
-                    crop = crop_roi(img, roi_cur)
-                    if crop.size > 0:
-                        debug_dir = Path("storage/app/cam_debug")
-                        debug_dir.mkdir(exist_ok=True)
-                        debug_file = debug_dir / f"fail_{ts}_{raw[:20].replace('/', '_')}.jpg"
-                        cv2.imwrite(str(debug_file), crop)
-                        print(f"[DEBUG] Crop saved: {debug_file}")
-                except Exception as e:
-                    pass
-                
-                # Tetap lapor ke server (tanpa ocr_weight) supaya frontend bisa
-                # tampilkan "kamera lihat: ..." buat debug ROI. Server TIDAK
-                # menyimpan ke DB, cuma cache 60 detik.
-                post_reading(args.api_base, {
-                    "station": station,
-                    "weighed_at": weighed_at,
-                    "ocr_weight": None,
-                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
-                })
-            elif is_jump and not confirmed:
-                # PRODUCTION MODE: langsung terima perubahan berat (ayam cepat turun/naik)
-                # Skip outlier detection untuk respons cepat
-                ocr_fail_streak = 0
-                pending_jump = None
-                recent_ok.append((now_ts, weight))
-                if len(recent_ok) > 12:
-                    recent_ok = recent_ok[-12:]
-                print(f"[{ts}][{station}] OCR JUMP: {weight:.2f} kg (median {median_w:.2f}, conf {conf:.2f}) raw={raw[:60]!r}")
-                persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
-                if persist_now:
-                    last_db_post = time.time()
-                post_reading(args.api_base, {
-                    "station": station,
-                    "weighed_at": weighed_at,
-                    "image_path": image_path,
-                    "ocr_weight": weight,
-                    "ocr_conf": round(float(conf), 3),
-                    "persist": persist_now,
-                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
-                })
-            elif not args.simulate and conf < args.min_conf and not agree and not confirmed:
-                ocr_fail_streak += 1
-                # Keyakinan rendah DAN tidak ada bacaan serupa di frame
-                # sebelumnya: buang. Kalau dua frame berturut-turut membaca
-                # angka yang sama, tetap dipakai (lihat `agree` di atas).
-                print(f"[{ts}] OCR ragu (conf {conf:.2f}, raw={raw[:80]!r}) — dibuang.")
                 post_reading(args.api_base, {
                     "station": station,
                     "weighed_at": weighed_at,
@@ -1788,19 +1729,13 @@ def main() -> int:
                 })
             else:
                 ocr_fail_streak = 0
-                if confirmed:
-                    print(f"[{ts}] Lompatan dikonfirmasi: {weight:.2f} kg (median {median_w:.2f})")
-                pending_jump = None
-                recent_ok.append((now_ts, weight))
-                if len(recent_ok) > 12:
-                    recent_ok = recent_ok[-12:]
                 extra = "" if args.simulate else f" {dt:.1f}s"
                 print(f"[{ts}][{station}] OCR: {weight:.2f} kg (conf {conf:.2f}){extra} raw={raw[:60]!r}")
-                # Live cache SELALU diupdate (LED cepat); insert DB dibatasi
-                # --db-every detik biar frame cepat tidak membanjiri MySQL.
+                
                 persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
                 if persist_now:
                     last_db_post = time.time()
+                
                 post_reading(args.api_base, {
                     "station": station,
                     "weighed_at": weighed_at,
