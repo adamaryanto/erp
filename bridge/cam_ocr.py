@@ -1730,6 +1730,22 @@ def main() -> int:
             if weight is None:
                 ocr_fail_streak += 1
                 print(f"[{ts}] OCR gagal (raw={raw[:80]!r}). Cek --roi / cahaya / fokus.")
+                
+                # DEBUG: Save failed crop untuk analisis
+                try:
+                    import cv2
+                    import numpy as np
+                    from pathlib import Path
+                    crop = crop_roi(img, roi_cur)
+                    if crop.size > 0:
+                        debug_dir = Path("storage/app/cam_debug")
+                        debug_dir.mkdir(exist_ok=True)
+                        debug_file = debug_dir / f"fail_{ts}_{raw[:20].replace('/', '_')}.jpg"
+                        cv2.imwrite(str(debug_file), crop)
+                        print(f"[DEBUG] Crop saved: {debug_file}")
+                except Exception as e:
+                    pass
+                
                 # Tetap lapor ke server (tanpa ocr_weight) supaya frontend bisa
                 # tampilkan "kamera lihat: ..." buat debug ROI. Server TIDAK
                 # menyimpan ke DB, cuma cache 60 detik.
