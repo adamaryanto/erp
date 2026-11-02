@@ -1227,10 +1227,10 @@ def main() -> int:
                     help="simpan bacaan ke DB tiap sekian detik (0=semua frame). "
                          "Live cache LED tetap diupdate tiap frame, jadi angka tetap "
                          "responsif tanpa membanjiri MySQL (default 2 dtk)")
-    ap.add_argument("--track", action=argparse.BooleanOptionalAction, default=True,
+    ap.add_argument("--track", action=argparse.BooleanOptionalAction, default=False,
                     help="AUTO-TRACK ROI: service mencari sendiri area display saat start, "
                          "melacaknya lagi tiap --track-every frame / saat bacaan gagal beruntun "
-                         "(--no-track = perilaku lama, ROI diam)")
+                         "(default false - ROI fixed, hanya kalibrasi manual via web)")
     ap.add_argument("--track-every", type=int, default=50,
                     help="cek ulang posisi display tiap sekian frame (default 50)")
     ap.add_argument("--track-fails", type=int, default=3,
@@ -1707,25 +1707,24 @@ def main() -> int:
                 (save_dir / fname).write_bytes(img)
                 image_path = f"cam/{fname}"
 
-            agree = False
-            is_jump = False
-            confirmed = False
-            median_w = None
+            # PRODUCTION MODE: Accept all weight changes immediately
+            # No jump detection, no median confirmation, no outlier filtering
             now_ts = time.time()
             if weight is not None:
-                recent_ok = [(t, w) for (t, w) in recent_ok if now_ts - t <= 10.0]
-                if pending_jump is not None and now_ts - pending_jump[1] > JUMP_CONFIRM_SEC:
-                    pending_jump = None
-                agree = any((now_ts - t) <= 3.0 and abs(w - weight) <= 0.30 for t, w in recent_ok)
+                # Clear history if weight change > 5kg (significant change)
                 if recent_ok:
-                    median_w = float(_median([w for _t, w in recent_ok]))
-                    jump_limit = max(JUMP_MIN_KG, abs(median_w) * JUMP_MAX_PCT)
-                    is_jump = abs(weight - median_w) > jump_limit
-                if is_jump and pending_jump is not None:
-                    prev_w, prev_at, _prev_cf, _prev_raw = pending_jump
-                    confirmed = abs(weight - prev_w) <= 0.30 and (now_ts - prev_at) <= JUMP_CONFIRM_SEC
-                if is_jump and not confirmed:
-                    pending_jump = (weight, now_ts, conf, raw)
+                    last_weight = recent_ok[-1][1] if recent_ok else weight
+                    if abs(weight - last_weight) > 5.0:
+                        recent_ok = [(now_ts, weight)]  # Reset history for big change
+                        print(f"[FAST] Weight change {last_weight}→{weight}kg - reset history")
+                    else:
+                        recent_ok.append((now_ts, weight))
+                        if len(recent_ok) > 6:  # Keep only 6 readings (3x lebih pendek)
+                            recent_ok = recent_ok[-6:]
+                else:
+                    recent_ok = [(now_ts, weight)]
+                
+                pending_jump = None  # No pending jumps
 
             if weight is None:
                 ocr_fail_streak += 1
@@ -1735,7 +1734,6 @@ def main() -> int:
                 try:
                     import cv2
                     import numpy as np
-                    from pathlib import Path
                     crop = crop_roi(img, roi_cur)
                     if crop.size > 0:
                         debug_dir = Path("storage/app/cam_debug")
