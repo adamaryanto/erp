@@ -1739,6 +1739,21 @@ def main() -> int:
                     "ocr_weight": None,
                     "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
+            elif weight is not None and weight <= 0.5:
+                # PRODUCTION FIX: Timbangan kosong (0-0.5kg) - langsung update live cache saja
+                # Skip semua processing, langsung update LED 0.00
+                ocr_fail_streak = 0
+                recent_ok = [(now_ts, 0.0)]  # Reset history ke 0
+                print(f"[{ts}][{station}] Timbangan KOSONG: 0.00 kg - skip processing")
+                
+                # Update live cache untuk LED (tanpa insert DB)
+                post_reading(args.api_base, {
+                    "station": station,
+                    "weighed_at": weighed_at,
+                    "ocr_weight": 0.0,
+                    "persist": False,  # JANGAN insert ke DB
+                    "raw_payload": {"ocr_raw": "0.00 [kosong]", "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
+                })
             elif is_jump and not confirmed:
                 # PRODUCTION MODE: langsung terima perubahan berat (ayam cepat turun/naik)
                 # Skip outlier detection untuk respons cepat
@@ -1777,9 +1792,16 @@ def main() -> int:
                 if confirmed:
                     print(f"[{ts}] Lompatan dikonfirmasi: {weight:.2f} kg (median {median_w:.2f})")
                 pending_jump = None
-                recent_ok.append((now_ts, weight))
-                if len(recent_ok) > 12:
-                    recent_ok = recent_ok[-12:]
+                
+                # PRODUCTION FIX: Clear history jika berat turun drastis (<5kg)
+                # Saat timbangan kosong (0-5kg), reset history supaya tidak terpengaruh angka lama
+                if weight is not None and weight < 5.0:
+                    recent_ok = [(now_ts, weight)]  # Reset history
+                    print(f"[{ts}] Timbangan kosong ({weight}kg) - reset history")
+                else:
+                    recent_ok.append((now_ts, weight))
+                    if len(recent_ok) > 12:
+                        recent_ok = recent_ok[-12:]
                 extra = "" if args.simulate else f" {dt:.1f}s"
                 print(f"[{ts}][{station}] OCR: {weight:.2f} kg (conf {conf:.2f}){extra} raw={raw[:60]!r}")
                 # Live cache SELALU diupdate (LED cepat); insert DB dibatasi
