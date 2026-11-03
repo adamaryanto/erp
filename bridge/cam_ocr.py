@@ -794,14 +794,14 @@ def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, pe
     if seven_seg and _sevenseg is not None:
         try:
             d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img_bytes, roi, angle=angle)
-            if d_val is not None and 1.0 <= d_val <= 200.0:
+            if d_val is not None and 0.0 <= d_val <= 200.0:
                 return d_val, d_cf, f"{d_val:.2f} [7seg]"
             # Gagal decode di ROI ini -> coba deteksi struktur (kontur) lalu decode
             try:
                 s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img_bytes, search_roi=roi)
                 if s_roi is not None:
                     d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img_bytes, s_roi, angle=angle)
-                    if d_val is not None and 1.0 <= d_val <= 200.0:
+                    if d_val is not None and 0.0 <= d_val <= 200.0:
                         return d_val, d_cf, f"{d_val:.2f} [7seg-struct]"
             except Exception:
                 pass
@@ -1632,7 +1632,8 @@ def main() -> int:
             # boleh jalan tiap frame gagal. Kalau ROI struktur ketemu tapi
             # decode-nya gagal, ROI tetap dipindah (frame berikutnya
             # EasyOCR/decoder mencoba dari ROI baru yang sudah pas).
-            if weight is None and not args.simulate and args.seven_seg and _sevenseg is not None:
+            if (weight is None and not args.simulate and args.track
+                    and args.seven_seg and _sevenseg is not None):
                 try:
                     s_roi, s_txt, _s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(img, search_roi=roi_expand(roi_cur, 0.75))
                     if s_roi is None:
