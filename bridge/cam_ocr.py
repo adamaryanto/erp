@@ -1367,23 +1367,68 @@ def main() -> int:
             except Exception as e:
                 print(f"[CAM-OCR] 7seg-struct error: {e}, coba EasyOCR...", flush=True)
 
-        # Fallback EasyOCR untuk display font cetak.
-        try:
-            get_reader(fast=False)
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            write_result(args.result_file, state="error", message="model EasyOCR gagal dimuat")
-            return 3
+        # Fallback EasyOCR untuk display font cetak (load model HANYA saat
+        # benar-benar perlu, supaya jalur 7seg cepat & tanpa dependensi).
+        def _ensure_reader():
+            try:
+                return get_reader(fast=False) is not None
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                return False
+
         if args.try_rotate:
-            # Coba semua arah, pemenang = skor grup desimal tertinggi.
-            # Model di-load sekali di atas; tiap arah cuma infer.
+            # FULL AUTO: coba semua arah putar. Untuk 7-segment, prioritaskan
+            # 7seg-struct + validasi decode (bukan EasyOCR) supaya rotate
+            # yang dipilih benar-benar menghasilkan bacaan valid.
             try:
                 import cv2
                 import numpy as np
             except ImportError:
                 print("ROI gagal: opencv belum diinstall (pip install opencv-python)")
                 write_result(args.result_file, state="error", message="opencv belum diinstall")
+                return 3
+
+            # 1) Coba 7seg-struct di tiap rotate (tanpa load model, cepat).
+            if args.seven_seg and _sevenseg is not None:
+                for deg in (0, 90, 180, 270):
+                    rimg = apply_rotate(img, deg)
+                    try:
+                        s_roi, s_txt, s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(rimg, search_roi=None)
+                    except Exception as e:
+                        print(f"[CAM-OCR] 7seg rotate {deg}° error: {e}", flush=True)
+                        continue
+                    if s_roi is None:
+                        continue
+                    # Validasi: coba decode, perlebar margin bila perlu.
+                    val, cf2, raw, _d = _sevenseg.decode_roi(rimg, s_roi, angle=0.0)
+                    used_roi = s_roi
+                    if val is None:
+                        x, y, w, h = s_roi
+                        for grow in (0.15, 0.30, 0.50):
+                            gx = max(0.0, x - w * grow)
+                            gy = max(0.0, y - h * grow)
+                            gw = min(1.0 - gx, w * (1 + 2 * grow))
+                            gh = min(1.0 - gy, h * (1 + 2 * grow))
+                            cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
+                            v2, c2, r2, _d2 = _sevenseg.decode_roi(rimg, cand, angle=0.0)
+                            if v2 is not None:
+                                val, cf2, raw, used_roi = v2, c2, r2, cand
+                                break
+                    if val is not None:
+                        print(f"ROI: {used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}")
+                        print(f"TEXT: {val:.2f}")
+                        print(f"ROTATE: {deg}")
+                        print(f"METHOD: 7seg-struct")
+                        write_result(args.result_file, state="done",
+                                     roi=f"{used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}",
+                                     text=f"{val:.2f}", rotate=deg, method="7seg-struct")
+                        return 0
+                print("[CAM-OCR] FULL AUTO 7seg: belum ada rotate valid, coba EasyOCR...", flush=True)
+
+            # 2) Fallback EasyOCR (font cetak).
+            if not _ensure_reader():
+                write_result(args.result_file, state="error", message="model EasyOCR gagal dimuat")
                 return 3
             winner = None  # (score, deg, roi, txt)
             for deg in (0, 90, 180, 270):
@@ -1419,6 +1464,9 @@ def main() -> int:
                          roi=f"{roi[0]},{roi[1]},{roi[2]},{roi[3]}", text=txt, rotate=deg)
             return 0
         img = apply_rotate(img, args.rotate)
+        if not _ensure_reader():
+            write_result(args.result_file, state="error", message="model EasyOCR gagal dimuat")
+            return 3
         roi, txt = detect_roi(img)
         if roi is None:
             print(f"ROI gagal: {txt}")
