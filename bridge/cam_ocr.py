@@ -1334,7 +1334,7 @@ def main() -> int:
         # dummy 7-seg, deteksi struktur kontur JAUH lebih andal dari EasyOCR.
         # Coba struktur dulu (tanpa load model), baru EasyOCR sebagai fallback
         # untuk display font cetak.
-        if args.seven_seg and _sevenseg is not None:
+        if not args.try_rotate and args.seven_seg and _sevenseg is not None:
             try:
                 s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img, search_roi=None)
                 if s_roi is not None:
@@ -1356,12 +1356,24 @@ def main() -> int:
                                 best_roi = cand
                                 val, cf, raw = v2, c2, r2
                                 break
+                    if val is not None:
+                        print(f"ROI: {best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}")
+                        print(f"TEXT: {raw}")
+                        print(f"METHOD: 7seg-struct")
+                        write_result(args.result_file, state="done",
+                                     roi=f"{best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}",
+                                     text=raw, method="7seg-struct", rotate=args.rotate)
+                        return 0
+                    # Decode gagal: simpan ROI struktur (tanpa angka) supaya
+                    # operator tetap dapat kandidat; EasyOCR di bawah jadi
+                    # fallback untuk display font cetak.
                     print(f"ROI: {best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}")
-                    print(f"TEXT: {raw}")
-                    print(f"METHOD: 7seg-struct")
+                    print(f"TEXT: ")
+                    print(f"METHOD: 7seg-struct-noread")
                     write_result(args.result_file, state="done",
                                  roi=f"{best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}",
-                                 text=raw, method="7seg-struct")
+                                 text="", method="7seg-struct-noread", rotate=args.rotate,
+                                 message="Display ditemukan tapi angka belum terbaca. Perbaiki ROI manual lalu TEST.")
                     return 0
                 print(f"[CAM-OCR] 7seg-struct tidak menemukan display ({s_txt}), coba EasyOCR...", flush=True)
             except Exception as e:
@@ -1391,7 +1403,9 @@ def main() -> int:
 
             # 1) Coba 7seg-struct di tiap rotate (tanpa load model, cepat).
             if args.seven_seg and _sevenseg is not None:
-                for deg in (0, 90, 180, 270):
+                struct_candidates = []  # (deg, rimg, s_roi, nd)
+                # Prioritas rotate: 0 dulu (kamera normal), lalu 180, 90, 270.
+                for deg in (0, 180, 90, 270):
                     rimg = apply_rotate(img, deg)
                     try:
                         s_roi, s_txt, s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(rimg, search_roi=None)
@@ -1405,7 +1419,7 @@ def main() -> int:
                     used_roi = s_roi
                     if val is None:
                         x, y, w, h = s_roi
-                        for grow in (0.15, 0.30, 0.50):
+                        for grow in (0.15, 0.30, 0.50, 0.75):
                             gx = max(0.0, x - w * grow)
                             gy = max(0.0, y - h * grow)
                             gw = min(1.0 - gx, w * (1 + 2 * grow))
@@ -1424,6 +1438,38 @@ def main() -> int:
                                      roi=f"{used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}",
                                      text=f"{val:.2f}", rotate=deg, method="7seg-struct")
                         return 0
+                    # Decode gagal tapi struktur menemukan display: simpan
+                    # sebagai kandidat (rotate + ROI) untuk fallback di bawah.
+                    struct_candidates.append((deg, used_roi, s_nd))
+                    # Kamera biasanya TIDAK miring (rotate 0). Bila di rotate 0
+                    # display SUDAH ketemu (walau angka belum kebaca), JANGAN
+                    # coba rotate lain yang bisa salah baca -> pakai rotate 0 +
+                    # ROI ini saja. Rotate lain hanya dicoba bila display TIDAK
+                    # ketemu sama sekali di rotate 0.
+                    if deg == 0:
+                        break
+
+                # Tidak ada rotate yang decode-nya berhasil, TAPI struktur
+                # menemukan display. JANGAN serahkan ke EasyOCR (bisa salah
+                # pilih rotate seperti 90°). Simpan ROI kandidat terbaik saja:
+                # pilih rotate yang digit-nya horizontal (landscape, deg 0/180)
+                # dan jumlah digit terbanyak. Operator bisa TEST/SIMPAN lalu
+                # perbaiki ROI manual bila perlu.
+                if struct_candidates:
+                    def _cand_key(c):
+                        deg, _roi, nd = c
+                        return (0 if deg in (0, 180) else 1, -nd)
+                    struct_candidates.sort(key=_cand_key)
+                    deg, used_roi, nd = struct_candidates[0]
+                    print(f"ROI: {used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}")
+                    print(f"TEXT: ")
+                    print(f"ROTATE: {deg}")
+                    print(f"METHOD: 7seg-struct-noread")
+                    write_result(args.result_file, state="done",
+                                 roi=f"{used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}",
+                                 text="", rotate=deg, method="7seg-struct-noread",
+                                 message="Display ditemukan tapi angka belum terbaca. Geser/perbesar ROI manual lalu TEST.")
+                    return 0
                 print("[CAM-OCR] FULL AUTO 7seg: belum ada rotate valid, coba EasyOCR...", flush=True)
 
             # 2) Fallback EasyOCR (font cetak).
