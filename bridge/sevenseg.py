@@ -987,7 +987,14 @@ def detect_roi_struct(img_bytes: bytes, search_roi=None):
                     gx1 = max(b[2] for b in group) + ox
                     gy1 = max(b[3] for b in group) + oy
                     gw, gh = max(1.0, gx1 - gx0), max(1.0, gy1 - gy0)
-                    if gw > 0.85 * W or gh > 0.6 * H or gw < gh:
+                    # Display timbangan wajar: lebar 15-55% frame, tinggi
+                    # 5-40%, selalu lebih lebar dari tinggi (landscape).
+                    # Batas atas diperketat dari 0.85/0.6 -> mencegah konten
+                    # besar (seluruh layar, taskbar, monitor lain) dianggap
+                    # display saat scene kamera ramai.
+                    if gw > 0.55 * W or gh > 0.45 * H or gw < gh:
+                        continue
+                    if gw < 0.12 * W:
                         continue
                     margin = 0.15
                     rx0 = max(0.0, (gx0 - gw * margin) / W)
