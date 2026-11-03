@@ -783,45 +783,32 @@ def ocr_weight_fast(img_bytes: bytes, roi, angle: float = 0.0, persp: bool = Tru
 def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, persp: bool = True, seven_seg: bool = True) -> tuple[float | None, float, str]:
     """Kembalikan (angka_kg, confidence 0-1, raw_text).
 
-    fast=True: recognizer langsung di crop ROI (2-3 dtk, buat service).
-    fast=False: deteksi dulu baru baca (lebih teliti, buat kalibrasi --once).
-    angle diteruskan ke preprocessing untuk deskew.
-    persp=True: bila bacaan pertama gagal/ragu, coba sekali koreksi perspektif.
-    seven_seg=True: decoder 7-segmen jadi penyelamat saat EasyOCR gagal/ragu
-    (khusus display timbangan Balanza BX1).
+    MODE 7-SEGMENT ONLY (tanpa EasyOCR): cocok untuk display timbangan
+    7-segment (Balanza BX1) maupun dummy LED 7-segment. Decoder segmen
+    jauh lebih akurat & cepat dari EasyOCR untuk font 7-segment, karena
+    EasyOCR dilatih untuk teks natural (baca "25.09" jadi "25.8").
+
+    EasyOCR sengaja TIDAK dipakai; fungsi ini murni kontur+ukur segmen.
+    Return: (weight_kg, confidence, raw_text)
     """
-    if fast:
-        return ocr_weight_fast(img_bytes, roi, angle=angle, persp=persp, seven_seg=seven_seg)
-
-    reader = get_reader(fast=False)
-    if reader is None:
-        return None, 0.0, "easyocr belum diinstall (pip install easyocr)"
-
-    processed = preprocess_for_ocr(img_bytes, roi, angle=angle)
-
-    if processed is not None:
-        results = reader.readtext(processed)
-    else:
-        # fallback tanpa opencv: tulis temp file lalu baca
-        tmp = Path("storage/app/cam_tmp.jpg")
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(img_bytes)
-        results = reader.readtext(str(tmp))
-
-    pairs = [(str(t), float(c)) for _, t, c in results]
-    val, cf, raw = pick_number(pairs)
-    if persp and (val is None or cf < 0.6):
+    if seven_seg and _sevenseg is not None:
         try:
-            retry = _perspective_retry(img_bytes, roi)
-        except Exception:
-            retry = None
-        if retry is not None and (val is None or retry[1] > cf):
-            return retry
-    if seven_seg and (val is None or cf < 0.6):
-        rescue = _try_7seg(img_bytes, roi, angle=angle)
-        if rescue is not None and (val is None or rescue[1] >= 0.7):
-            return rescue
-    return val, cf, raw
+            d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img_bytes, roi, angle=angle)
+            if d_val is not None and 1.0 <= d_val <= 200.0:
+                return d_val, d_cf, f"{d_val:.2f} [7seg]"
+            # Gagal decode di ROI ini -> coba deteksi struktur (kontur) lalu decode
+            try:
+                s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img_bytes, search_roi=roi)
+                if s_roi is not None:
+                    d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img_bytes, s_roi, angle=angle)
+                    if d_val is not None and 1.0 <= d_val <= 200.0:
+                        return d_val, d_cf, f"{d_val:.2f} [7seg-struct]"
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[7SEG] Error: {e}")
+
+    return None, 0.0, "7seg failed"
 
 
 def _score_digit_groups(results, W: int, H: int):
@@ -1475,32 +1462,19 @@ def main() -> int:
     CAMERA_FAIL_AFTER = 5
     MODEL_RETRY_SEC = 60.0
 
-    # Panaskan model sekali di depan (load ~15-20 dtk), biar frame
-    # berikutnya tinggal infer 2-3 dtk. Tanpa ini frame pertama lambat.
-    # GAGAL LOAD MODEL = JANGAN MATI (dulu: return 3 -> pill balik START):
-    # masuk mode tunggu, heartbeat tetap jalan, retry tiap 60 dtk.
-    reader_ok = bool(args.simulate)
+    # MODE 7-SEGMENT ONLY: tidak perlu load model EasyOCR (hemat ~10-20 dtk
+    # startup + RAM). Decoder segmen murni kontur, tidak pakai model ML.
+    # reader_ok selalu True kecuali sevenseg.py tidak ditemukan.
+    reader_ok = bool(args.simulate) or (args.seven_seg and _sevenseg is not None)
     model_retry_at = 0.0
     if not args.simulate:
-        write_status(args.status_file, "loading_model", "Memuat model EasyOCR (±20 dtk)...")
-        print("[CAM-OCR] Memuat model EasyOCR...", flush=True)
-        t0 = time.time()
-        try:
-            reader_ok = get_reader(fast=args.fast) is not None
-            if not reader_ok:
-                raise RuntimeError("easyocr belum diinstall (pip install easyocr)")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            reader_ok = False
-            model_retry_at = time.time() + MODEL_RETRY_SEC
-            print(f"[CAM-OCR] Model GAGAL dimuat: {e} -> mode tunggu, retry otomatis 60 dtk.", flush=True)
+        if _sevenseg is None:
+            print("[CAM-OCR] PERINGATAN: sevenseg.py tidak ditemukan - decoder 7-seg tidak aktif!", flush=True)
             write_status(args.status_file, "degraded_model",
-                         f"Model EasyOCR gagal dimuat: {e}. Service tetap hidup, retry otomatis 60 dtk. "
-                         "Cek internet (download model pertama) / pip install easyocr.")
-        if reader_ok:
-            print(f"[CAM-OCR] Model siap ({time.time() - t0:.1f}s).", flush=True)
-            write_status(args.status_file, "running", "Model siap, OCR jalan.")
+                         "sevenseg.py tidak ditemukan di folder bridge/. Copy file itu lalu restart.")
+        else:
+            print("[CAM-OCR] Mode 7-SEGMENT ONLY (tanpa EasyOCR) - siap langsung.", flush=True)
+            write_status(args.status_file, "running", "Mode 7-segment, OCR jalan.")
 
     # --- AUTO-TRACK ROI (state, port lokal) ---
     # roi_cur = ROI kerja yang bisa bergerak sendiri; args.roi cuma tebakan
