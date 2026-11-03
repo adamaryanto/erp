@@ -1328,7 +1328,46 @@ def main() -> int:
                 print(f"ROI gagal: snapshot: {e}")
                 write_result(args.result_file, state="error", message=f"snapshot: {e}")
                 return 1
-        print("[CAM-OCR] Deteksi display full-frame (±10-20 dtk)...", flush=True)
+        img = apply_rotate(img, args.rotate)
+
+        # PRIORITAS 7-SEGMENT: untuk display timbangan (Balanza BX1) maupun
+        # dummy 7-seg, deteksi struktur kontur JAUH lebih andal dari EasyOCR.
+        # Coba struktur dulu (tanpa load model), baru EasyOCR sebagai fallback
+        # untuk display font cetak.
+        if args.seven_seg and _sevenseg is not None:
+            try:
+                s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img, search_roi=None)
+                if s_roi is not None:
+                    # Validasi: coba decode di ROI ini. Kalau gagal, perlebar
+                    # margin (decoder butuh konteks latar di tepi crop) lalu
+                    # decode lagi. Ambil ROI yang benar-benar bisa dibaca.
+                    best_roi = s_roi
+                    val, cf, raw, _d = _sevenseg.decode_roi(img, s_roi, angle=0.0)
+                    if val is None:
+                        x, y, w, h = s_roi
+                        for grow in (0.15, 0.30, 0.50):
+                            gx = max(0.0, x - w * grow)
+                            gy = max(0.0, y - h * grow)
+                            gw = min(1.0 - gx, w * (1 + 2 * grow))
+                            gh = min(1.0 - gy, h * (1 + 2 * grow))
+                            cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
+                            v2, c2, r2, _d2 = _sevenseg.decode_roi(img, cand, angle=0.0)
+                            if v2 is not None:
+                                best_roi = cand
+                                val, cf, raw = v2, c2, r2
+                                break
+                    print(f"ROI: {best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}")
+                    print(f"TEXT: {raw}")
+                    print(f"METHOD: 7seg-struct")
+                    write_result(args.result_file, state="done",
+                                 roi=f"{best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}",
+                                 text=raw, method="7seg-struct")
+                    return 0
+                print(f"[CAM-OCR] 7seg-struct tidak menemukan display ({s_txt}), coba EasyOCR...", flush=True)
+            except Exception as e:
+                print(f"[CAM-OCR] 7seg-struct error: {e}, coba EasyOCR...", flush=True)
+
+        # Fallback EasyOCR untuk display font cetak.
         try:
             get_reader(fast=False)
         except Exception:
