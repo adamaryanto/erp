@@ -793,14 +793,16 @@ def ocr_weight(img_bytes: bytes, roi, fast: bool = False, angle: float = 0.0, pe
     """
     if seven_seg and _sevenseg is not None:
         try:
-            d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img_bytes, roi, angle=angle)
+            # decode_roi_auto: coba beberapa sudut deskew otomatis supaya
+            # kamera yang agak miring tetap kebaca (tanpa set angle manual).
+            d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi_auto(img_bytes, roi, angle=angle)
             if d_val is not None and 0.0 <= d_val <= 200.0:
                 return d_val, d_cf, f"{d_val:.2f} [7seg]"
             # Gagal decode di ROI ini -> coba deteksi struktur (kontur) lalu decode
             try:
                 s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img_bytes, search_roi=roi)
                 if s_roi is not None:
-                    d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img_bytes, s_roi, angle=angle)
+                    d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi_auto(img_bytes, s_roi, angle=angle)
                     if d_val is not None and 0.0 <= d_val <= 200.0:
                         return d_val, d_cf, f"{d_val:.2f} [7seg-struct]"
             except Exception:
@@ -1342,7 +1344,7 @@ def main() -> int:
                     # margin (decoder butuh konteks latar di tepi crop) lalu
                     # decode lagi. Ambil ROI yang benar-benar bisa dibaca.
                     best_roi = s_roi
-                    val, cf, raw, _d = _sevenseg.decode_roi(img, s_roi, angle=0.0)
+                    val, cf, raw, _d = _sevenseg.decode_roi_auto(img, s_roi, angle=0.0)
                     if val is None:
                         x, y, w, h = s_roi
                         for grow in (0.15, 0.30, 0.50):
@@ -1351,7 +1353,7 @@ def main() -> int:
                             gw = min(1.0 - gx, w * (1 + 2 * grow))
                             gh = min(1.0 - gy, h * (1 + 2 * grow))
                             cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
-                            v2, c2, r2, _d2 = _sevenseg.decode_roi(img, cand, angle=0.0)
+                            v2, c2, r2, _d2 = _sevenseg.decode_roi_auto(img, cand, angle=0.0)
                             if v2 is not None:
                                 best_roi = cand
                                 val, cf, raw = v2, c2, r2
@@ -1415,7 +1417,7 @@ def main() -> int:
                     if s_roi is None:
                         continue
                     # Validasi: coba decode, perlebar margin bila perlu.
-                    val, cf2, raw, _d = _sevenseg.decode_roi(rimg, s_roi, angle=0.0)
+                    val, cf2, raw, _d = _sevenseg.decode_roi_auto(rimg, s_roi, angle=0.0)
                     used_roi = s_roi
                     if val is None:
                         x, y, w, h = s_roi
@@ -1425,7 +1427,7 @@ def main() -> int:
                             gw = min(1.0 - gx, w * (1 + 2 * grow))
                             gh = min(1.0 - gy, h * (1 + 2 * grow))
                             cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
-                            v2, c2, r2, _d2 = _sevenseg.decode_roi(rimg, cand, angle=0.0)
+                            v2, c2, r2, _d2 = _sevenseg.decode_roi_auto(rimg, cand, angle=0.0)
                             if v2 is not None:
                                 val, cf2, raw, used_roi = v2, c2, r2, cand
                                 break
@@ -1782,7 +1784,7 @@ def main() -> int:
                                 roi_saved = roi_cur
                                 last_roi_save = time.time()
                         try:
-                            d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi(img, s_roi, angle=roi_angle)
+                            d_val, d_cf, d_raw, d_detail = _sevenseg.decode_roi_auto(img, s_roi, angle=roi_angle)
                         except Exception:
                             d_val = None
                         if d_val is not None:

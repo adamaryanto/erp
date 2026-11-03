@@ -856,6 +856,39 @@ def decode_roi(img_bytes: bytes, roi, angle: float = 0.0):
     return None, 0.0, "", f"decoder: {last_detail}"
 
 
+def decode_roi_auto(img_bytes: bytes, roi, angle: float = 0.0, angles=None):
+    """Decode 7-segmen dengan AUTO-DESKEW.
+
+    Kamera yang agak miring membuat digit tidak tegak -> segmen ambigu ->
+    decoder menolak. Fungsi ini mencoba beberapa sudut koreksi kecil sekitar
+    `angle` dan memilih hasil dengan confidence tertinggi. Bila `angle`
+    sudah eksplisit & berhasil, tidak boros: tetap dicoba sudut tetangga
+    hanya bila hasil pertama kurang yakin (conf < 0.75).
+
+    Return sama seperti decode_roi: (nilai|None, conf, raw, detail).
+    """
+    if angles is None:
+        # Sudut-sudut kecil khas kamera dipasang agak miring (derajat).
+        angles = [angle, angle - 2, angle + 2, angle - 4, angle + 4,
+                  angle - 6, angle + 6, angle - 8, angle + 8]
+    best = None  # (conf, val, raw, detail)
+    for ang in angles:
+        try:
+            val, cf, raw, detail = decode_roi(img_bytes, roi, angle=ang)
+        except Exception:
+            continue
+        if val is not None:
+            if best is None or cf > best[0]:
+                best = (cf, val, raw, detail)
+            # Sudah sangat yakin -> berhenti (hemat waktu).
+            if cf >= 0.85:
+                break
+    if best is None:
+        # Tidak ada sudut yang berhasil: kembalikan detail percobaan pertama.
+        return decode_roi(img_bytes, roi, angle=angle)
+    return best[1], best[0], best[2], best[3]
+
+
 def _row_groups(digit_boxes):
     """Kelompokkan box digit jadi baris (mirip _merge_row_boxes di cam_ocr):
     sebaris (overlap vertikal >=40%) dan gap wajar (<=1 tinggi digit)."""
