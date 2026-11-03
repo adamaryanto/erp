@@ -9,16 +9,14 @@
   body { background: #000; color: #00FF00; font-family: 'Courier New', monospace;
          height: 100vh; display: flex; align-items: center; justify-content: center; }
   .display { text-align: center; }
-  /* Display 7-segment seperti timbangan di video: digit hijau terang di
-     latar gelap, segmen yang mati tetap kelihatan sangat redup (efek
-     "888" samar di video). Tanpa font eksternal, jadi file ini tetap
-     jalan offline baik dibuka lewat file:// maupun Laragon. */
+  /* Display 7-segment tajam (NO-GLOW): segmen nyala hijau terang, segmen
+     mati gelap hingga hampir tak terlihat. Ini menyerupai LED fisik
+     Balanza BX1 sehingga decoder 7-segment OCR bisa membaca akurat. */
   .seg-display { display: flex; align-items: flex-start; justify-content: center; }
   .digit { position: relative; width: clamp(44px, 7vw, 84px); height: clamp(80px, 12.5vw, 150px);
            margin: 0 clamp(2px, 0.4vw, 6px); flex: none; }
-  .seg { position: absolute; background: rgba(0, 255, 0, 0.04); }
-  .seg.on { background: #00FF00;
-            box-shadow: 0 0 5px rgba(0, 255, 0, 0.55), 0 0 8px rgba(0, 255, 0, 0.25); }
+  .seg { position: absolute; background: #001100; }
+  .seg.on { background: #00FF00; }
   .seg.a { top: 0; left: 12%; width: 76%; height: 11%;
            clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
   .seg.g { top: 44.5%; left: 12%; width: 76%; height: 11%;
@@ -34,9 +32,9 @@
   .seg.c { top: 55%; left: 86%; width: 14%; height: 38%;
            clip-path: polygon(50% 0, 100% 12%, 100% 88%, 50% 100%, 0 88%, 0 12%); }
   .dot { width: clamp(10px, 1.4vw, 16px); height: clamp(10px, 1.4vw, 16px); border-radius: 50%;
-         background: rgba(0, 255, 0, 0.04); align-self: flex-end;
+         background: #001100; align-self: flex-end;
          margin: 0 clamp(2px, 0.4vw, 6px) clamp(4px, 0.8vw, 10px); flex: none; }
-  .dot.on { background: #00FF00; box-shadow: 0 0 4px rgba(0, 255, 0, 0.55); }
+  .dot.on { background: #00FF00; }
   .satuan { font-size: 6vw; color: #00cc6a; font-family: sans-serif; font-weight: bold; }
   .fase { position: fixed; top: 14px; width: 100%; text-align: center;
           font-size: 20px; font-family: sans-serif; font-weight: bold; }
@@ -61,7 +59,7 @@
     <div class="seg-display" id="segDisplay"></div>
     <div class="satuan">kg</div>
   </div>
-  <p class="hint">[sim2 7-seg glow-redup] <span id="dbg">tick#0</span> • FULL MANUAL: START = naik+tahan • STOP = turun ke 0, diem sampai START lagi</p>
+  <p class="hint">[sim2 7-seg NO-GLOW] <span id="dbg">tick#0</span> • FULL MANUAL: START = naik+tahan • STOP = turun ke 0, diem sampai START lagi</p>
   <div class="ctl">
     <button id="btnStart" onclick="mulai()">▶ START</button>
     <button id="btnStop" onclick="berhenti()">■ STOP</button>
