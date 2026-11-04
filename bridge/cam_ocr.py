@@ -1847,23 +1847,40 @@ def main() -> int:
                     "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
                 })
             else:
-                ocr_fail_streak = 0
-                extra = "" if args.simulate else f" {dt:.1f}s"
-                print(f"[{ts}][{station}] OCR: {weight:.2f} kg (conf {conf:.2f}){extra} raw={raw[:60]!r}")
-                
-                persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
-                if persist_now:
-                    last_db_post = time.time()
-                
-                post_reading(args.api_base, {
-                    "station": station,
-                    "weighed_at": weighed_at,
-                    "image_path": image_path,
-                    "ocr_weight": weight,
-                    "ocr_conf": round(float(conf), 3),
-                    "persist": persist_now,
-                    "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
-                })
+                # Anti digit-hilang (kasus "20.80" kebaca "2.80" saat angka
+                # bergerak cepat / digit puluhan terpotong): bila nilai baru
+                # persis ~1/10 dari bacaan stabil sebelumnya (>2kg), tahan
+                # frame ini (jangan kirim) dan tunggu frame berikut — kalau
+                # memang turun beneran, frame berikut akan mendukungnya.
+                held = False
+                if recent_ok:
+                    prev_w = recent_ok[-1][1]
+                    if prev_w >= 2.0 and abs(weight * 10 - prev_w) <= max(0.6, prev_w * 0.05):
+                        held = True
+                        print(f"[{ts}] Tahan ({weight:.2f} kg ≈ 1/10 dari {prev_w:.2f}) — tunggu konfirmasi.")
+                if held:
+                    pass
+                else:
+                    ocr_fail_streak = 0
+                    extra = "" if args.simulate else f" {dt:.1f}s"
+                    print(f"[{ts}][{station}] OCR: {weight:.2f} kg (conf {conf:.2f}){extra} raw={raw[:60]!r}")
+                    recent_ok.append((time.time(), weight))
+                    if len(recent_ok) > 6:
+                        recent_ok = recent_ok[-6:]
+
+                    persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
+                    if persist_now:
+                        last_db_post = time.time()
+
+                    post_reading(args.api_base, {
+                        "station": station,
+                        "weighed_at": weighed_at,
+                        "image_path": image_path,
+                        "ocr_weight": weight,
+                        "ocr_conf": round(float(conf), 3),
+                        "persist": persist_now,
+                        "raw_payload": {"ocr_raw": raw[:200], "roi": list(roi_cur), "model": "easyocr-en", "fast": args.fast},
+                    })
         except Exception as e:
             print(f"[{datetime.now():%H:%M:%S}] frame error (lanjut): {e}")
             weight = None

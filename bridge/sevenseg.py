@@ -1066,7 +1066,7 @@ def detect_roi_struct(img_bytes: bytes, search_roi=None):
                         continue
                     if gw < 0.12 * W:
                         continue
-                    margin = 0.15
+                    margin = 0.18
                     rx0 = max(0.0, (gx0 - gw * margin) / W)
                     ry0 = max(0.0, (gy0 - gh * margin) / H)
                     rx1 = min(float(W), gx1 + gw * margin) / W
