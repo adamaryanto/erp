@@ -199,18 +199,6 @@
             }
             return (now - wStableSince) >= 150;
         }
-        // Median bergulir untuk melacak berat TERENDAH sejak record terakhir.
-        // Tukar keranjang cepat bikin berat turun sesaat lalu balik naik; kalau
-        // hanya lihat nilai saat ini, penurunan itu terlewat. Median meredam
-        // noise 1 frame supaya tidak salah re-arm.
-        let wMinWin = [];
-        function __wMedian(w) {
-            if (!(w > 0)) { wMinWin = []; return 0; }
-            wMinWin.push(w);
-            if (wMinWin.length > 5) wMinWin.shift();
-            const s = [...wMinWin].sort((a, b) => a - b);
-            return s[Math.floor(s.length / 2)];
-        }
         // Cooldown pendek (~400ms) setelah selesai sampling, supaya tidak
         // langsung trigger ulang saat berat masih di sekitar nilai record.
         let loopCooldownUntil = 0;
@@ -227,7 +215,7 @@
                 autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
                 manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
-                autoDropKg: {{ (float) ($settings->auto_drop_kg ?? 8) }},
+                autoDropKg: {{ (float) ($settings->auto_drop_kg ?? 3) }},
                 mode: '{{ $mode ?? 'mesin' }}',
 
                 isConnected: false,
@@ -300,7 +288,6 @@
                 autoStart: false,
                 autoStopped: false,
                 lastBasketW: null,
-                minSinceRecord: null,
 
                 isSampling: false,
                 samplingCountdown: 4,
@@ -1049,9 +1036,7 @@
                     this.autoArmed = true;
                     wStableRef = null;
                     wRecent = [];
-                    wMinWin = [];
                     this.lastBasketW = null;
-                    this.minSinceRecord = null;
                     loopCooldownUntil = 0;
                     this.autoCount = 0;
                     this.autoTotalNetto = 0;
@@ -1157,36 +1142,24 @@
                     // putus-nyambung; syarat re-arm di bawah hanya berlaku
                     // untuk data segar.
                     if (!this.isConnected) return;
-                    const med = __wMedian(w);   // median untuk lacak turun terendah
                     if (this.autoArmed && w > this.triggerKg && __wStable(w) && Date.now() >= loopCooldownUntil) {
                         this.autoArmed = false;
                         // Simpan berat saat trigger sebagai acuan "turun berapa
                         // kg" untuk re-arm (walau sampling nanti dibatalkan).
                         this.lastBasketW = w;
-                        this.minSinceRecord = w;
                         this.startSampling();
                     } else if (!this.autoArmed) {
-                        // Lacak berat TERENDAH sejak record terakhir (pakai median,
-                        // supaya 1 frame noise tidak dianggap penurunan). Selama
-                        // !showResult pun tetap dilacak, jadi kalau keranjang
-                        // sudah diangkat saat hasil masih tampil, re-arm langsung
-                        // begitu hasil hilang.
-                        if (med > 0 && (this.minSinceRecord == null || med < this.minSinceRecord)) {
-                            this.minSinceRecord = med;
-                        }
-                        // RE-ARM hanya bila keranjang BENAR-BENAR ditukar/diangkat:
+                        // RE-ARM hanya bila keranjang BENAR-BENAR diangkat/ditukar:
                         //   (a) berat sekarang di bawah emptyKg (kosong), ATAU
-                        //   (b) berat PERNAH turun minimal autoDropKg di bawah
-                        //       keranjang terakhir (lastBasketW) — pakai nilai
-                        //       TERENDAH, bukan nilai saat ini, sehingga tukar
-                        //       cepat yang turun sesaat lalu balik naik tetap
-                        //       terdeteksi sebagai keranjang baru.
-                        // Ini mencegah keranjang yang DIAM LAMA (goyang kecil di
-                        // sekitar trigger) ke-record berulang.
+                        //   (b) berat turun minimal autoDropKg dari keranjang
+                        //       terakhir (lastBasketW).
+                        // Pakai nilai SAAT INI (bukan minimum lintas-siklus): lebih
+                        // sederhana & predictable. Keranjang diam hanya goyang <1kg
+                        // sehingga tidak mencapai 3kg -> tidak record berulang.
+                        // Tukar cepat turun >3kg sesaat -> cukup satu frame terbaca.
                         if (!this.showResult && (
                             w < this.emptyKg
-                            || (this.lastBasketW != null && this.minSinceRecord != null
-                                && (this.lastBasketW - this.minSinceRecord) >= this.autoDropKg)
+                            || (this.lastBasketW != null && (this.lastBasketW - w) >= this.autoDropKg)
                         )) {
                             this.autoArmed = true;
                             wStableRef = null;
@@ -1306,7 +1279,7 @@
                         if (!res.ok) throw new Error('http ' + res.status);
                         const saved = await res.json();
                         const g = Number(saved.weighing.gross_avg || 0);
-                        if (g > 0) { this.lastBasketW = g; this.minSinceRecord = g; }
+                        if (g > 0) this.lastBasketW = g;
                         if (auto) {
                             this.autoCount += 1;
                             this.autoTotalNetto += Number(saved.weighing.net_kg || 0);
