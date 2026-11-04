@@ -215,7 +215,7 @@
                 autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
                 manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
-                autoDropKg: {{ (float) ($settings->auto_drop_kg ?? 3) }},
+                autoDropKg: {{ (float) ($settings->auto_drop_kg ?? 5) }},
                 mode: '{{ $mode ?? 'mesin' }}',
 
                 isConnected: false,
@@ -288,6 +288,7 @@
                 autoStart: false,
                 autoStopped: false,
                 lastBasketW: null,
+                lowStreak: 0,
 
                 isSampling: false,
                 samplingCountdown: 4,
@@ -1037,6 +1038,7 @@
                     wStableRef = null;
                     wRecent = [];
                     this.lastBasketW = null;
+                    this.lowStreak = 0;
                     loopCooldownUntil = 0;
                     this.autoCount = 0;
                     this.autoTotalNetto = 0;
@@ -1147,21 +1149,24 @@
                         // Simpan berat saat trigger sebagai acuan "turun berapa
                         // kg" untuk re-arm (walau sampling nanti dibatalkan).
                         this.lastBasketW = w;
+                        this.lowStreak = 0;
                         this.startSampling();
                     } else if (!this.autoArmed) {
                         // RE-ARM hanya bila keranjang BENAR-BENAR diangkat/ditukar:
                         //   (a) berat sekarang di bawah emptyKg (kosong), ATAU
                         //   (b) berat turun minimal autoDropKg dari keranjang
                         //       terakhir (lastBasketW).
-                        // Pakai nilai SAAT INI (bukan minimum lintas-siklus): lebih
-                        // sederhana & predictable. Keranjang diam hanya goyang <1kg
-                        // sehingga tidak mencapai 3kg -> tidak record berulang.
-                        // Tukar cepat turun >3kg sesaat -> cukup satu frame terbaca.
+                        // Turun (b) harus BERTAHAN 2 tick (~200ms) supaya 1 frame
+                        // noise OCR (mis. kebaca 2.0 saat asli 20.0) tidak memicu
+                        // re-arm palsu -> record berulang.
+                        const dropped = (this.lastBasketW != null && (this.lastBasketW - w) >= this.autoDropKg);
+                        this.lowStreak = dropped ? (this.lowStreak + 1) : 0;
                         if (!this.showResult && (
                             w < this.emptyKg
-                            || (this.lastBasketW != null && (this.lastBasketW - w) >= this.autoDropKg)
+                            || this.lowStreak >= 2
                         )) {
                             this.autoArmed = true;
+                            this.lowStreak = 0;
                             wStableRef = null;
                             wRecent = [];
                         }

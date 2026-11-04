@@ -15,7 +15,7 @@ return new class extends Migration
             // Re-arm auto loop hanya bila berat TURUN minimal sebesar ini
             // dari keranjang terakhir (keranjang benar-benar diangkat),
             // bukan sekadar turun di bawah trigger.
-            $table->decimal('auto_drop_kg', 8, 2)->default(3.00)->after('auto_empty_kg');
+            $table->decimal('auto_drop_kg', 8, 2)->default(5.00)->after('auto_empty_kg');
         });
     }
 

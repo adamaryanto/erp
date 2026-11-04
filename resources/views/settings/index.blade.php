@@ -161,7 +161,7 @@
                 <div>
                     <label class="block text-sm text-gray-700">Auto Turun (kg) — re-arm</label>
                     <input type="number" name="auto_drop_kg" value="{{ $settings->auto_drop_kg }}" step="0.5" min="1" max="50" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                    <p class="text-gray-600 text-xs mt-2">Keranjang dianggap diangkat & siap ditimbang lagi bila berat PERNAH TURUN minimal sekian kg dari keranjang terakhir (atau turun di bawah Auto Empty). Pakai turun TERENDAH, jadi tukar keranjang cepat pun terdeteksi. 3 kg aman untuk keranjang diam (goyang &lt; 1 kg).</p>
+                    <p class="text-gray-600 text-xs mt-2">Keranjang dianggap diangkat & siap ditimbang lagi bila berat turun minimal sekian kg dari keranjang terakhir (atau turun di bawah Auto Empty), dan turun itu harus bertahan ~0.2 detik (biar noise 1 frame tidak memicu). Naikkan bila keranjang diam masih ke-record berulang; turunkan bila tukar keranjang cepat tidak terdeteksi.</p>
                     @error('auto_drop_kg') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
                 </div>
 
