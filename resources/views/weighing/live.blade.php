@@ -205,6 +205,7 @@
                 autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
                 manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
+                autoDropKg: {{ (float) ($settings->auto_drop_kg ?? 8) }},
                 mode: '{{ $mode ?? 'mesin' }}',
 
                 isConnected: false,
@@ -400,7 +401,7 @@
                 get autoStatusText() {
                     if (!this.canWeigh) return 'TIMBANGAN PUTUS';
                     if (this.isSampling) return `MENGHITUNG ${this.samplingTotalSec} DETIK… JANGAN ANGKAT`;
-                    if (!this.autoArmed) return 'TERCATAT — ANGKAT, TUNGGU NOL';
+                    if (!this.autoArmed) return `TERCATAT — ANGKAT KERANJANG (TURUN > ${this.autoDropKg} KG)`;
                     return 'TARUH KERANJANG (>10 KG)';
                 },
 
@@ -1124,26 +1125,21 @@
                     if (!this.isConnected) return;
                     if (this.autoArmed && w > this.triggerKg && __wStable(w) && Date.now() >= loopCooldownUntil) {
                         this.autoArmed = false;
+                        // Simpan berat saat trigger sebagai acuan "turun berapa
+                        // kg" untuk re-arm (walau sampling nanti dibatalkan).
+                        this.lastBasketW = w;
                         this.startSampling();
                     } else if (!this.autoArmed && !this.showResult
-                        // ATURAN USER ("kurang 10 kg, jalanin lagi"):
-                        // re-arm begitu berat sudah di bawah triggerKg
-                        // (10 kg). Koreksi dari aturan sebelumnya yang
-                        // salah tafsir: aturan lama menuntut kosong <2 kg
-                        // + turun >10 kg dari keranjang terakhir + bertahan
-                        // 1 detik — itu yang bikin keranjang baru tidak
-                        // jalan padahal timbangan sudah sempat 0 lalu naik
-                        // lagi: momen 0 yang singkat, atau 0 yang kelewat
-                        // frame OCR (32 kg -> langsung 33 kg di data),
-                        // tidak pernah memenuhi syarat kosong 1 detik itu.
-                        // Aturan baru ini sengaja responsif: di bawah 10 kg
-                        // = siap keranjang berikutnya, di atas 10 kg +
-                        // stabil = record. Konsekuensi yang disadari user:
-                        // geser sebagian sampai di bawah 10 kg lalu taruh
-                        // lagi keranjang yang sama bisa ke-record lagi —
-                        // itu harga dari tidak mau kehilangan keranjang
-                        // baru yang tukarannya cepat.
-                        && w < this.triggerKg) {
+                        // RE-ARM hanya bila keranjang BENAR-BENAR diangkat:
+                        //   (a) berat sudah turun di bawah emptyKg (kosong), ATAU
+                        //   (b) berat turun minimal autoDropKg dari keranjang
+                        //       terakhir (lastBasketW).
+                        // Ini mencegah keranjang yang DIAM LAMA (bergerak naik-
+                        // turun sedikit di sekitar trigger) ke-record berulang.
+                        && (
+                            w < this.emptyKg
+                            || (this.lastBasketW != null && (this.lastBasketW - w) >= this.autoDropKg)
+                        )) {
                         this.autoArmed = true;
                         wStableRef = null;
                     }
@@ -1342,7 +1338,7 @@
                 var st = (root && root._x_dataStack) ? root._x_dataStack[0] : null;
                 if (!st || !st.autoLoop) { el.textContent = 'LOOP: MATI'; return; }
                 var phase = st.isSampling ? ('MENGHITUNG ' + (st.samplingTotalSec || 2) + ' DETIK… JANGAN ANGKAT')
-                    : (!st.autoArmed ? 'TERCATAT — ANGKAT KERANJANG, TUNGGU NOL' : 'SIAP — TARUH KERANJANG (>10 KG)');
+                    : (!st.autoArmed ? 'TERCATAT — ANGKAT KERANJANG (TURUN > ' + st.autoDropKg + ' KG)' : 'SIAP — TARUH KERANJANG (>10 KG)');
                 el.textContent = 'LOOP: JALAN • #' + st.autoCount + ' • '
                     + Number(st.autoTotalNetto || 0).toFixed(2) + ' kg • ' + phase;
             } catch (e) {}

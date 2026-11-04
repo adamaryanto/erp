@@ -159,6 +159,13 @@
                 </div>
 
                 <div>
+                    <label class="block text-sm text-gray-700">Auto Turun (kg) — re-arm</label>
+                    <input type="number" name="auto_drop_kg" value="{{ $settings->auto_drop_kg }}" step="0.5" min="1" max="50" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="text-gray-600 text-xs mt-2">Keranjang dianggap diangkat & siap ditimbang lagi bila berat TURUN minimal sekian kg dari keranjang terakhir (atau turun di bawah Auto Empty). Mencegah keranjang yang diam lama ke-record berulang.</p>
+                    @error('auto_drop_kg') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
+                </div>
+
+                <div>
                     <label class="block text-sm text-gray-700">Auto Duration (detik)</label>
                     <input type="number" name="auto_duration_sec" value="{{ $settings->auto_duration_sec }}" step="0.5" min="0.5" max="60" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
                     <p class="text-gray-600 text-xs mt-2">Durasi sampling di mode auto. Di bawah 1 dtk = praktis 1x jepret (statistik + tolak-gerak lumpuh).</p>
