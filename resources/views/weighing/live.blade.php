@@ -857,7 +857,7 @@
                         const start = await fetch('/api/cam/roi/auto', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation }),
+                            body: JSON.stringify({ station: this.selectedStation, rotate: this.roiRotate }),
                         });
                         const sd = await start.json();
                         if (sd.status !== 'started') {
@@ -891,7 +891,7 @@
                         const start = await fetch('/api/cam/roi/autocal', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation }),
+                            body: JSON.stringify({ station: this.selectedStation, rotate: this.roiRotate }),
                         });
                         const sd = await start.json();
                         if (sd.status !== 'started') {

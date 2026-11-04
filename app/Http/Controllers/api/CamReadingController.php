@@ -393,7 +393,7 @@ class CamReadingController extends Controller
      * memblokir seluruh server (di php artisan serve single-thread) →
      * pratinjau/polling ikut ngantre dan kamera tampak "tidak update".
      */
-    private function startCalibration(string $station, string $snapshotUrl, bool $tryRotate, $settings): JsonResponse
+    private function startCalibration(string $station, string $snapshotUrl, bool $tryRotate, $settings, ?int $forcedRotate = null): JsonResponse
     {
         $resultFile = $this->calibResultFile($station);
         @unlink($resultFile);
@@ -419,11 +419,19 @@ class CamReadingController extends Controller
             ], 502);
         }
 
+        // Rotate yang dipakai untuk frame kalibrasi: pilihan operator bila
+        // diberikan (operator sudah tahu kamera miring atau tidak), kalau
+        // tidak baru pakai rotate tersimpan.
+        $rotateUsed = $forcedRotate ?? (int) ($settings->cam_rotate ?? 0);
+
         Cache::put('cam_calibrating', $frameFile, 900);
         Cache::put($this->calibCtxKey($station), [
             'mode' => $tryRotate ? 'autocal' : 'roi',
             'was_running' => $wasRunning,
             'prev_interval' => $prevInterval,
+            // rotate operator (bila diisi) → dipakai sebagai hasil final,
+            // tidak ditimpa deteksi otomatis.
+            'forced_rotate' => $forcedRotate,
         ], 1800);
 
         $args = array_merge(
@@ -431,12 +439,12 @@ class CamReadingController extends Controller
                 $this->pythonBin(), base_path('bridge/cam_ocr.py')],
             ['--snapshot-url', $snapshotUrl,
                 '--station', $station,
-                '--rotate', (string) ($settings->cam_rotate ?? 0),
+                '--rotate', (string) $rotateUsed,
                 '--auto-roi',
                 '--input-file', $frameFile,
                 '--result-file', $resultFile]
         );
-        if ($tryRotate) {
+        if ($tryRotate && $forcedRotate === null) {
             $args[] = '--try-rotate';
         }
 
@@ -744,6 +752,7 @@ class CamReadingController extends Controller
     {
         $validated = $request->validate([
             'station' => 'nullable|string|max:20',
+            'rotate' => 'nullable|integer|in:0,90,180,270',
         ]);
 
         $settings = Setting::config();
@@ -757,19 +766,24 @@ class CamReadingController extends Controller
         }
 
         $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
+        $forcedRotate = array_key_exists('rotate', $validated) ? (int) $validated['rotate'] : null;
 
-        return $this->startCalibration($station, $snapshotUrl, false, $settings);
+        return $this->startCalibration($station, $snapshotUrl, false, $settings, $forcedRotate);
     }
 
     /**
      * KALIBRASI FULL-MANDIRI 1 klik (async): mulai deteksi 4 arah, balas
      * "started". Penyelesaian (SIMPAN ROI+Putar, START lagi bila sebelumnya
      * jalan) ditangani calibrationStatus() di poll berikutnya.
+     *
+     * Bila operator mengirim `rotate`, arah itu DIPAKSA dipakai (tidak
+     * dicoba 4 arah) — supaya pilihan "0°" operator tidak ditimpa deteksi.
      */
     public function autoCalibrate(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'station' => 'nullable|string|max:20',
+            'rotate' => 'nullable|integer|in:0,90,180,270',
         ]);
 
         $settings = Setting::config();
@@ -783,8 +797,9 @@ class CamReadingController extends Controller
         }
 
         $station = strtoupper(trim($validated['station'] ?? 'POS-01') ?: 'POS-01');
+        $forcedRotate = array_key_exists('rotate', $validated) ? (int) $validated['rotate'] : null;
 
-        return $this->startCalibration($station, $snapshotUrl, true, $settings);
+        return $this->startCalibration($station, $snapshotUrl, true, $settings, $forcedRotate);
     }
 
     /**
@@ -835,10 +850,17 @@ class CamReadingController extends Controller
 
             if ($state === 'done' && ($ctx['mode'] ?? 'roi') === 'autocal'
                 && isset($data['roi'], $data['rotate'])) {
+                // Rotate pilihan operator (forced_rotate) MENANG atas hasil
+                // deteksi otomatis. Ini mencegah operator pilih "0°" tapi
+                // ditimpa jadi 90/180/270 oleh deteksi yang keliru.
+                $forcedRotate = $ctx['forced_rotate'] ?? null;
                 Setting::config()->update([
-                    'cam_rotate' => (int) $data['rotate'],
+                    'cam_rotate' => $forcedRotate !== null ? (int) $forcedRotate : (int) $data['rotate'],
                     'cam_roi' => (string) $data['roi'],
                 ]);
+                if ($forcedRotate !== null) {
+                    $data['rotate'] = (int) $forcedRotate;
+                }
             }
 
             $restarted = false;
