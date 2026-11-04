@@ -611,7 +611,10 @@ class CamReadingController extends Controller
         }
 
         $roi = $validated['roi'] ?? Setting::config()->cam_roi ?: '0.28,0.38,0.44,0.26';
-        $interval = (string) ($validated['interval'] ?? 2);
+        // Default interval cepat (0.3 dtk ~ 3 frame/detik) untuk pabrik
+        // hectic: angka timbangan ikut bergerak cepat. LED web tetap
+        // responsif karena frame cepat update live cache.
+        $interval = (string) ($validated['interval'] ?? 0.3);
         $safe = strtoupper(preg_replace('/[^A-Z0-9]+/i', '', $station));
         $stopFile = $this->stopFile($station);
         $pidFile = $this->pidFile($station);
@@ -640,6 +643,13 @@ class CamReadingController extends Controller
                 '--interval', $interval,
                 '--min-conf', (string) ($settings->ocr_min_conf ?? 0.4),
                 '--fast', '--no-save', '--quiet',
+                // Kamera posisi tetap (tidak miring/dipindah tiap frame):
+                // matikan koreksi perspektif berat -> hemat 0.1-0.3 dtk/frame.
+                '--no-perspective',
+                // Live cache tiap frame (LED cepat), tapi INSERT ke DB
+                // dibatasi tiap 3 dtk supaya MySQL tidak jadi bottleneck saat
+                // interval cepat 0.3 dtk (~10 frame/detik dari cam).
+                '--db-every', '3',
                 // ROI manual operator harus dihormati. Auto-track terbukti
                 // bergeser ke text taskbar Windows (ROI y~0.56) lalu membaca
                 // sampah ('3e82'), jadi jangan biarkan daemon menimpa ROI.

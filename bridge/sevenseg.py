@@ -856,36 +856,73 @@ def decode_roi(img_bytes: bytes, roi, angle: float = 0.0):
     return None, 0.0, "", f"decoder: {last_detail}"
 
 
+# Cache sudut deskew terbaik: {roi_key: (angle, hits)}. Dipakai supaya
+# frame berikutnya mencoba sudut yang kemarin berhasil DULU -> cepat.
+_DESKEW_CACHE = {}
+
+
 def decode_roi_auto(img_bytes: bytes, roi, angle: float = 0.0, angles=None):
-    """Decode 7-segmen dengan AUTO-DESKEW.
+    """Decode 7-segmen dengan AUTO-DESKEW (dioptimalkan untuk kecepatan).
 
     Kamera yang agak miring membuat digit tidak tegak -> segmen ambigu ->
-    decoder menolak. Fungsi ini mencoba beberapa sudut koreksi kecil sekitar
-    `angle` dan memilih hasil dengan confidence tertinggi. Bila `angle`
-    sudah eksplisit & berhasil, tidak boros: tetap dicoba sudut tetangga
-    hanya bila hasil pertama kurang yakin (conf < 0.75).
+    decoder menolak. Fungsi ini mencoba beberapa sudut koreksi kecil dan
+    memilih hasil dengan confidence tertinggi.
+
+    Optimasi kecepatan (untuk pabrik hectic):
+    1. Sudut yang TERAKHIR berhasil untuk ROI ini dicoba DULU (cache) ->
+       frame berikutnya biasanya cukup 1 percobaan (0.1s).
+    2. Early-exit lebih agresif: berhenti begitu conf >= 0.82.
+    3. Bila sudut utama (angle) sudah berhasil, sudut lain TIDAK dicoba.
 
     Return sama seperti decode_roi: (nilai|None, conf, raw, detail).
     """
+    # ROI key ringkas (dibulatkan) untuk cache sudut per-area.
+    try:
+        roi_key = tuple(round(float(v), 3) for v in roi)
+    except Exception:
+        roi_key = None
+
     if angles is None:
-        # Sudut-sudut kecil khas kamera dipasang agak miring (derajat).
         angles = [angle, angle - 2, angle + 2, angle - 4, angle + 4,
-                  angle - 6, angle + 6, angle - 8, angle + 8]
-    best = None  # (conf, val, raw, detail)
-    for ang in angles:
+                  angle - 6, angle + 6]
+
+    # Susun urutan: sudut cache (paling mungkin berhasil) didahulukan.
+    cached = _DESKEW_CACHE.get(roi_key) if roi_key is not None else None
+    order = list(angles)
+    if cached is not None and cached[0] in order:
+        order.remove(cached[0])
+        order.insert(0, cached[0])
+
+    best = None  # (conf, val, raw, detail, angle)
+    tried = []
+    for ang in order:
+        tried.append(ang)
         try:
             val, cf, raw, detail = decode_roi(img_bytes, roi, angle=ang)
         except Exception:
             continue
         if val is not None:
             if best is None or cf > best[0]:
-                best = (cf, val, raw, detail)
-            # Sudah sangat yakin -> berhenti (hemat waktu).
-            if cf >= 0.85:
+                best = (cf, val, raw, detail, ang)
+            # Berhenti lebih awal: sudut pertama yang berhasil & cukup yakin
+            # tidak perlu lanjut. 0.82 = digit jelas & konsisten.
+            if cf >= 0.82:
                 break
+            # Kalau sudut utama (angle) berhasil walau conf menengah, itu
+            # paling mungkin sudut yang benar -> jangan coba yang lain.
+            if ang == angle and cf >= 0.70:
+                break
+
     if best is None:
-        # Tidak ada sudut yang berhasil: kembalikan detail percobaan pertama.
         return decode_roi(img_bytes, roi, angle=angle)
+
+    # Simpan sudut pemenang ke cache (naikkan hit-count bila sama).
+    if roi_key is not None:
+        if cached is not None and cached[0] == best[4]:
+            _DESKEW_CACHE[roi_key] = (best[4], cached[1] + 1)
+        else:
+            _DESKEW_CACHE[roi_key] = (best[4], 1)
+
     return best[1], best[0], best[2], best[3]
 
 

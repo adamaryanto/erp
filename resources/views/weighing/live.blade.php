@@ -1424,7 +1424,7 @@
             __loopStatus();
             window.__extPollN++;
             __ledSet('extPoll', '• ext #' + window.__extPollN + ' (a#' + (window.__pollN || 0) + ')');
-        }, 1000);
+        }, 300);
         // Ekor/keranjang: hitung ulang tiap ketik + tiap LED update.
         // Pesan status LED: diklik START → langsung tampil (tidak nunggu server).
         (function () {
