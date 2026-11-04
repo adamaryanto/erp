@@ -1199,6 +1199,11 @@ def main() -> int:
                     help="simpan bacaan ke DB tiap sekian detik (0=semua frame). "
                          "Live cache LED tetap diupdate tiap frame, jadi angka tetap "
                          "responsif tanpa membanjiri MySQL (default 2 dtk)")
+    ap.add_argument("--no-persist", action="store_true",
+                    help="JANGAN pernah insert DB sendiri; hanya update live cache. "
+                         "Dipakai kalau penyimpanan resmi ditangani auto-loop "
+                         "frontend (yang tahu kapan keranjang ditukar). Mencegah "
+                         "banyak baris tersimpan terus-menerus walau keranjang diam.")
     ap.add_argument("--track", action=argparse.BooleanOptionalAction, default=False,
                     help="AUTO-TRACK ROI: service mencari sendiri area display saat start, "
                          "melacaknya lagi tiap --track-every frame / saat bacaan gagal beruntun "
@@ -1868,7 +1873,8 @@ def main() -> int:
                     if len(recent_ok) > 6:
                         recent_ok = recent_ok[-6:]
 
-                    persist_now = args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every
+                    persist_now = (not args.no_persist) and (
+                        args.db_every <= 0 or (time.time() - last_db_post) >= args.db_every)
                     if persist_now:
                         last_db_post = time.time()
 

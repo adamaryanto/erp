@@ -646,10 +646,12 @@ class CamReadingController extends Controller
                 // Kamera posisi tetap (tidak miring/dipindah tiap frame):
                 // matikan koreksi perspektif berat -> hemat 0.1-0.3 dtk/frame.
                 '--no-perspective',
-                // Live cache tiap frame (LED cepat), tapi INSERT ke DB
-                // dibatasi tiap 3 dtk supaya MySQL tidak jadi bottleneck saat
-                // interval cepat 0.3 dtk (~10 frame/detik dari cam).
-                '--db-every', '3',
+                // Live cache tiap frame (LED cepat). INSERT ke DB TIDAK
+                // dilakukan daemon: dulu --db-every 3 dtk bikin baris
+                // tersimpan terus-menerus walau keranjang DIAM (auto loop
+                // terasa "jalan sendiri"). Sekarang penyimpanan resmi hanya
+                // dari auto-loop frontend yang tahu kapan keranjang ditukar.
+                '--no-persist',
                 // ROI manual operator harus dihormati. Auto-track terbukti
                 // bergeser ke text taskbar Windows (ROI y~0.56) lalu membaca
                 // sampah ('3e82'), jadi jangan biarkan daemon menimpa ROI.
