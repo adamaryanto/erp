@@ -36,7 +36,7 @@ class Setting extends Model
             'auto_mode_enabled' => true,
             'auto_trigger_kg' => 10,
             'auto_empty_kg' => 2,
-            'auto_drop_kg' => 8,
+            'auto_drop_kg' => 3,
             'auto_duration_sec' => 5,
             'beep_enabled' => true,
             'printer_name' => '',
