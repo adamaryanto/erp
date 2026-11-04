@@ -1338,46 +1338,69 @@ def main() -> int:
         # untuk display font cetak.
         if not args.try_rotate and args.seven_seg and _sevenseg is not None:
             try:
-                s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img, search_roi=None)
-                if s_roi is not None:
-                    # Validasi: coba decode di ROI ini. Kalau gagal, perlebar
-                    # margin (decoder butuh konteks latar di tepi crop) lalu
-                    # decode lagi. Ambil ROI yang benar-benar bisa dibaca.
-                    best_roi = s_roi
-                    val, cf, raw, _d = _sevenseg.decode_roi_auto(img, s_roi, angle=0.0)
-                    if val is None:
-                        x, y, w, h = s_roi
+                # Deteksi struktur: coba beberapa jendela cari. Full-frame
+                # sering kacau kalau ada konten lain (browser/taskbar/monitor
+                # kedua); jendela TENGAH (tempat display timbangan biasanya)
+                # dan sekitar ROI lama lebih andal. Ambil hasil pertama yang
+                # benar-benar bisa di-decode.
+                search_windows = [None, (0.22, 0.18, 0.56, 0.34), (0.28, 0.20, 0.44, 0.30)]
+                try:
+                    x0, y0, w0, h0 = (float(v) for v in args.roi)
+                    search_windows.append((max(0.0, x0 - w0), max(0.0, y0 - h0),
+                                           min(1.0, w0 * 3), min(1.0, h0 * 3)))
+                except Exception:
+                    pass
+
+                best_roi = None
+                val = cf = None
+                raw = ""
+                s_roi_any = None
+                for sw in search_windows:
+                    try:
+                        s_roi, s_txt, _s_cf, _s_ang, _s_nd = _sevenseg.detect_roi_struct(img, search_roi=sw)
+                    except Exception:
+                        continue
+                    if s_roi is None:
+                        continue
+                    if s_roi_any is None:
+                        s_roi_any = s_roi
+                    cand0 = s_roi
+                    # Coba decode di ROI ini + perlebar margin bila perlu.
+                    v0, c0, r0, _d0 = _sevenseg.decode_roi_auto(img, cand0, angle=0.0)
+                    if v0 is None:
+                        xx, yy, ww, hh = cand0
                         for grow in (0.15, 0.30, 0.50):
-                            gx = max(0.0, x - w * grow)
-                            gy = max(0.0, y - h * grow)
-                            gw = min(1.0 - gx, w * (1 + 2 * grow))
-                            gh = min(1.0 - gy, h * (1 + 2 * grow))
+                            gx = max(0.0, xx - ww * grow)
+                            gy = max(0.0, yy - hh * grow)
+                            gw = min(1.0 - gx, ww * (1 + 2 * grow))
+                            gh = min(1.0 - gy, hh * (1 + 2 * grow))
                             cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
                             v2, c2, r2, _d2 = _sevenseg.decode_roi_auto(img, cand, angle=0.0)
                             if v2 is not None:
-                                best_roi = cand
-                                val, cf, raw = v2, c2, r2
+                                v0, c0, r0, cand0 = v2, c2, r2, cand
                                 break
-                    if val is not None:
-                        print(f"ROI: {best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}")
-                        print(f"TEXT: {raw}")
-                        print(f"METHOD: 7seg-struct")
-                        write_result(args.result_file, state="done",
-                                     roi=f"{best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}",
-                                     text=raw, method="7seg-struct", rotate=args.rotate)
-                        return 0
-                    # Decode gagal: simpan ROI struktur (tanpa angka) supaya
-                    # operator tetap dapat kandidat; EasyOCR di bawah jadi
-                    # fallback untuk display font cetak.
+                    if v0 is not None and 0.0 <= v0 <= 200.0:
+                        best_roi, val, cf, raw = cand0, v0, c0, r0
+                        break
+                if best_roi is not None:
                     print(f"ROI: {best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}")
+                    print(f"TEXT: {raw}")
+                    print(f"METHOD: 7seg-struct")
+                    write_result(args.result_file, state="done",
+                                 roi=f"{best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}",
+                                 text=raw, method="7seg-struct", rotate=args.rotate)
+                    return 0
+                # Struktur menemukan display (walau belum terbaca): pakai itu.
+                if s_roi_any is not None:
+                    print(f"ROI: {s_roi_any[0]},{s_roi_any[1]},{s_roi_any[2]},{s_roi_any[3]}")
                     print(f"TEXT: ")
                     print(f"METHOD: 7seg-struct-noread")
                     write_result(args.result_file, state="done",
-                                 roi=f"{best_roi[0]},{best_roi[1]},{best_roi[2]},{best_roi[3]}",
+                                 roi=f"{s_roi_any[0]},{s_roi_any[1]},{s_roi_any[2]},{s_roi_any[3]}",
                                  text="", method="7seg-struct-noread", rotate=args.rotate,
                                  message="Display ditemukan tapi angka belum terbaca. Perbaiki ROI manual lalu TEST.")
                     return 0
-                print(f"[CAM-OCR] 7seg-struct tidak menemukan display ({s_txt}), coba EasyOCR...", flush=True)
+                print(f"[CAM-OCR] 7seg-struct tidak menemukan display, coba EasyOCR...", flush=True)
             except Exception as e:
                 print(f"[CAM-OCR] 7seg-struct error: {e}, coba EasyOCR...", flush=True)
 
@@ -1406,31 +1429,47 @@ def main() -> int:
             # 1) Coba 7seg-struct di tiap rotate (tanpa load model, cepat).
             if args.seven_seg and _sevenseg is not None:
                 struct_candidates = []  # (deg, rimg, s_roi, nd)
+                # Jendela cari: full-frame, tengah, sekitar ROI lama. Full-frame
+                # kacau bila ada konten lain; jendela lebih sempit lebih andal.
+                search_windows = [None, (0.22, 0.18, 0.56, 0.34), (0.28, 0.20, 0.44, 0.30)]
+                try:
+                    x0, y0, w0, h0 = (float(v) for v in args.roi)
+                    search_windows.append((max(0.0, x0 - w0), max(0.0, y0 - h0),
+                                           min(1.0, w0 * 3), min(1.0, h0 * 3)))
+                except Exception:
+                    pass
                 # Prioritas rotate: 0 dulu (kamera normal), lalu 180, 90, 270.
                 for deg in (0, 180, 90, 270):
                     rimg = apply_rotate(img, deg)
-                    try:
-                        s_roi, s_txt, s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(rimg, search_roi=None)
-                    except Exception as e:
-                        print(f"[CAM-OCR] 7seg rotate {deg}° error: {e}", flush=True)
-                        continue
-                    if s_roi is None:
-                        continue
-                    # Validasi: coba decode, perlebar margin bila perlu.
-                    val, cf2, raw, _d = _sevenseg.decode_roi_auto(rimg, s_roi, angle=0.0)
-                    used_roi = s_roi
-                    if val is None:
-                        x, y, w, h = s_roi
-                        for grow in (0.15, 0.30, 0.50, 0.75):
-                            gx = max(0.0, x - w * grow)
-                            gy = max(0.0, y - h * grow)
-                            gw = min(1.0 - gx, w * (1 + 2 * grow))
-                            gh = min(1.0 - gy, h * (1 + 2 * grow))
-                            cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
-                            v2, c2, r2, _d2 = _sevenseg.decode_roi_auto(rimg, cand, angle=0.0)
-                            if v2 is not None:
-                                val, cf2, raw, used_roi = v2, c2, r2, cand
-                                break
+                    val = cf2 = None
+                    raw = ""
+                    used_roi = None
+                    s_roi_any = None
+                    for sw in search_windows:
+                        try:
+                            s_roi, s_txt, s_cf, _s_ang, s_nd = _sevenseg.detect_roi_struct(rimg, search_roi=sw)
+                        except Exception as e:
+                            continue
+                        if s_roi is None:
+                            continue
+                        if s_roi_any is None:
+                            s_roi_any = s_roi
+                        val, cf2, raw, _d = _sevenseg.decode_roi_auto(rimg, s_roi, angle=0.0)
+                        used_roi = s_roi
+                        if val is None:
+                            x, y, w, h = s_roi
+                            for grow in (0.15, 0.30, 0.50, 0.75):
+                                gx = max(0.0, x - w * grow)
+                                gy = max(0.0, y - h * grow)
+                                gw = min(1.0 - gx, w * (1 + 2 * grow))
+                                gh = min(1.0 - gy, h * (1 + 2 * grow))
+                                cand = (round(gx, 3), round(gy, 3), round(gw, 3), round(gh, 3))
+                                v2, c2, r2, _d2 = _sevenseg.decode_roi_auto(rimg, cand, angle=0.0)
+                                if v2 is not None:
+                                    val, cf2, raw, used_roi = v2, c2, r2, cand
+                                    break
+                        if val is not None:
+                            break
                     if val is not None:
                         print(f"ROI: {used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}")
                         print(f"TEXT: {val:.2f}")
@@ -1440,15 +1479,13 @@ def main() -> int:
                                      roi=f"{used_roi[0]},{used_roi[1]},{used_roi[2]},{used_roi[3]}",
                                      text=f"{val:.2f}", rotate=deg, method="7seg-struct")
                         return 0
-                    # Decode gagal tapi struktur menemukan display: simpan
-                    # sebagai kandidat (rotate + ROI) untuk fallback di bawah.
-                    struct_candidates.append((deg, used_roi, s_nd))
+                    if s_roi_any is not None:
+                        struct_candidates.append((deg, s_roi_any, 0))
                     # Kamera biasanya TIDAK miring (rotate 0). Bila di rotate 0
                     # display SUDAH ketemu (walau angka belum kebaca), JANGAN
                     # coba rotate lain yang bisa salah baca -> pakai rotate 0 +
-                    # ROI ini saja. Rotate lain hanya dicoba bila display TIDAK
-                    # ketemu sama sekali di rotate 0.
-                    if deg == 0:
+                    # ROI ini saja.
+                    if deg == 0 and s_roi_any is not None:
                         break
 
                 # Tidak ada rotate yang decode-nya berhasil, TAPI struktur
