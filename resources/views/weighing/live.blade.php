@@ -179,18 +179,28 @@
         // masih naik/turun. Reset otomatis tiap keranjang baru di-arm.
         let wStableRef = null;
         let wStableSince = 0;
+        let wRecent = [];            // jendela nilai terakhir untuk median
         function __wStable(w) {
             const now = Date.now();
-            if (!(w > 0)) { wStableRef = null; return false; }
-            if (wStableRef === null || Math.abs(w - wStableRef) > 0.10) {
-                wStableRef = w;
+            if (!(w > 0)) { wStableRef = null; wRecent = []; return false; }
+            // Median dari beberapa frame terakhir: tahan outlier OCR sesaat
+            // (mis. satu frame kebaca 20.90 di tengah 20.80 yang diam). Angka
+            // yang SUDAH berhenti tidak boleh dianggap "belum stabil" hanya
+            // karena satu-dua frame noise.
+            wRecent.push(w);
+            if (wRecent.length > 5) wRecent.shift();
+            const sorted = [...wRecent].sort((a, b) => a - b);
+            const med = sorted[Math.floor(sorted.length / 2)];
+            // Toleransi 0.25 kg terhadap REFERENSI (median awal), jendela 150 ms.
+            if (wStableRef === null || Math.abs(med - wStableRef) > 0.25) {
+                wStableRef = med;
                 wStableSince = now;
                 return false;
             }
-            return (now - wStableSince) >= 400;
+            return (now - wStableSince) >= 150;
         }
-        // Cooldown 2 detik tiap habis nangkep: biar tidak langsung sampling
-        // lagi di tengah transisi (turun/naik) yang bikin hasil sampah.
+        // Cooldown pendek (~400ms) setelah selesai sampling, supaya tidak
+        // langsung trigger ulang saat berat masih di sekitar nilai record.
         let loopCooldownUntil = 0;
         // (Debounce kosong dihapus pada revisi aturan "kurang 10 kg":
         // momen kosong yang singkat / kelewat frame OCR tidak boleh
@@ -585,9 +595,16 @@
                         if (this.backendWeight !== null) {
                             this.liveRawWeight = this.backendWeight;
                             this.liveStatus = 'STABIL';
-                        } else {
-                            this.liveRawWeight = 0;
+                        } else if (!this.backendConnected) {
+                            // Putus: jangan bikin 0 palsu (0 = "keranjang diangkat").
+                            // Nilai terakhir dipertahankan.
                             this.liveStatus = '—';
+                        } else {
+                            // Tersambung tapi 1 frame OCR gagal (null): PERTAHANKAN
+                            // nilai terakhir, jangan reset ke 0. Menolkan di sini
+                            // akan mereset stabilitas & bikin trigger telat, padahal
+                            // angka di display sudah berhenti.
+                            this.liveStatus = 'STABIL';
                         }
                     } catch (e) {
                         // Fetch gagal (timeout/abort) = putus, BUKAN kosong.
@@ -1018,6 +1035,7 @@
                     this.autoStopped = false;
                     this.autoArmed = true;
                     wStableRef = null;
+                    wRecent = [];
                     loopCooldownUntil = 0;
                     this.autoCount = 0;
                     this.autoTotalNetto = 0;
@@ -1041,7 +1059,7 @@
                     // antrean auto-sampling, terasa lemot di pabrik. 400ms bikin
                     // re-arm "habis di-0-kan" dan trigger timbang jauh lebih responsif.
                     // Tab tidak aktif → skip polling biar antrean tidak numpuk.
-                    setInterval(() => { if (!document.hidden) this.pollBackendLive(); }, 400);
+                    setInterval(() => { if (!document.hidden) this.pollBackendLive(); }, 250);
                     this.refreshServiceStatus();
                     setInterval(() => this.refreshServiceStatus(), 5000);
                     try { this.initChart(); } catch (e) { console.warn('chart off', e); }
@@ -1142,6 +1160,7 @@
                         )) {
                         this.autoArmed = true;
                         wStableRef = null;
+                        wRecent = [];
                     }
                 },
 
@@ -1218,8 +1237,10 @@
                         goyangWarning: selisih > 0.8,
                     };
                     this.showResult = true;
-                    loopCooldownUntil = Date.now() + 1000;
-                    if (this.autoLoop) setTimeout(() => this.saveResult(true), 1000);
+                    // Cooldown pendek saja: 400ms cukup agar tidak langsung
+                    // trigger ulang saat berat masih di sekitar nilai record.
+                    loopCooldownUntil = Date.now() + 400;
+                    if (this.autoLoop) setTimeout(() => this.saveResult(true), 600);
                 },
                 async saveResult(auto = false) {
                     if (!this.resultData) return;
