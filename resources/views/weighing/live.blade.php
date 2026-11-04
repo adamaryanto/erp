@@ -1152,19 +1152,20 @@
                         this.lowStreak = 0;
                         this.startSampling();
                     } else if (!this.autoArmed) {
-                        // RE-ARM hanya bila keranjang BENAR-BENAR diangkat/ditukar:
-                        //   (a) berat sekarang di bawah emptyKg (kosong), ATAU
+                        // RE-ARM hanya bila keranjang BENAR-BENAR diangkat/ditukar.
+                        // Dua kondisi:
+                        //   (a) berat di bawah emptyKg (kosong), ATAU
                         //   (b) berat turun minimal autoDropKg dari keranjang
                         //       terakhir (lastBasketW).
-                        // Turun (b) harus BERTAHAN 2 tick (~200ms) supaya 1 frame
-                        // noise OCR (mis. kebaca 2.0 saat asli 20.0) tidak memicu
-                        // re-arm palsu -> record berulang.
+                        // KEDUANYA harus BERTAHAN ~0.6 dtk (3 tick @200ms). Satu
+                        // frame noise OCR yang kebaca 0.00 (sering terjadi saat
+                        // display berganti/glare) TIDAK boleh memicu re-arm ->
+                        // dulu inilah biang "auto loop jalan terus" walau
+                        // keranjang diam.
+                        const isEmpty = (w < this.emptyKg);
                         const dropped = (this.lastBasketW != null && (this.lastBasketW - w) >= this.autoDropKg);
-                        this.lowStreak = dropped ? (this.lowStreak + 1) : 0;
-                        if (!this.showResult && (
-                            w < this.emptyKg
-                            || this.lowStreak >= 2
-                        )) {
+                        this.lowStreak = (isEmpty || dropped) ? (this.lowStreak + 1) : 0;
+                        if (!this.showResult && this.lowStreak >= 3) {
                             this.autoArmed = true;
                             this.lowStreak = 0;
                             wStableRef = null;
