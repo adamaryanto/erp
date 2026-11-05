@@ -39,7 +39,7 @@ class SettingsController extends Controller
             'auto_mode_enabled' => 'boolean',
             'auto_trigger_kg' => 'required|numeric|min:5|max:20',
             'auto_empty_kg' => 'required|numeric|min:0.5|max:5',
-            'auto_rearm_drop_kg' => 'required|numeric|min:5|max:50',
+            'auto_rearm_drop_kg' => 'required|numeric|min:1|max:50',
             'auto_duration_sec' => 'required|numeric|min:0.5|max:60',
             'beep_enabled' => 'boolean',
             'printer_name' => 'nullable|string|max:255',

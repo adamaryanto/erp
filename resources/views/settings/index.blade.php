@@ -160,8 +160,8 @@
 
                 <div>
                     <label class="block text-sm text-gray-700">Re-arm Turun (kg)</label>
-                    <input type="number" name="auto_rearm_drop_kg" value="{{ $settings->auto_rearm_drop_kg ?? 10 }}" step="0.5" min="5" max="50" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                    <p class="text-gray-600 text-xs mt-2">Setelah sebuah keranjang tercatat, auto loop baru SIAP RECORD LAGI saat berat turun minimal sekian kg dari keranjang terakhir (tahan ~0.5 detik). Untuk keranjang ayam (penuh ~28-39 kg), 10 kg cukup aman mendeteksi tukar keranjang — termasuk saat turun sampai 0.0.</p>
+                    <input type="number" name="auto_rearm_drop_kg" value="{{ $settings->auto_rearm_drop_kg ?? 5 }}" step="0.5" min="1" max="50" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="text-gray-600 text-xs mt-2">Setelah sebuah keranjang tercatat, auto loop SIAP lagi saat berat PERNAH TURUN minimal sekian kg DAN NAIK LAGI minimal sekian kg (urutan: turun lalu naik). Cocok untuk tukar keranjang SANGAT CEPAT — angka tidak sempat menyentuh 0. Set 5 kg untuk keranjang ayam (~28-39 kg).</p>
                     @error('auto_rearm_drop_kg') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
                 </div>
 
@@ -294,7 +294,7 @@
                 <li>• Letakkan keranjang → Auto trigger saat berat > {{ $settings->auto_trigger_kg }}kg</li>
                 <li>• Sampling {{ $settings->auto_duration_sec }} detik otomatis</li>
                 <li>• Beep + counter increment saat tersimpan</li>
-                <li>• Setelah record, SIAP lagi saat berat turun &ge; {{ $settings->auto_rearm_drop_kg ?? 10 }}kg dari keranjang terakhir</li>
+                <li>• Setelah record, SIAP lagi saat berat turun lalu naik lagi (min {{ $settings->auto_rearm_drop_kg ?? 5 }}kg dari titik terendah)</li>
             </ul>
         </div>
 

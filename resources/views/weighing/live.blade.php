@@ -173,23 +173,22 @@
         // Data grafik JUGA di luar state Alpine (alasan sama: mutasi array
         // reaktif 10x/detik + Chart.js = stack overflow).
         let chartPoints = Array(50).fill(0);
-        // Deteksi STABIL berbasis RENTANG beberapa frame terakhir.
-        // PENTING: stabil harus lebih lama & lebih ketat daripada sekadar
-        // "4 frame terakhir mirip", karena saat keranjang DITARIK turun
-        // angka bisa melintasi nilai yang sama selama ~1 detik (mis. 13.96)
-        // dan itu dulu dianggap stabil -> sampling menangkap campuran
-        // turun + naik (record sampah). Sekarang stabil HANYA jika
-        // 15 pembacaan berturut (~1.5 dtk) semuanya dalam rentang <= 0.3 kg.
-        // Saat angka masih bergerak (naik/turun), rentang >> 0.3 kg.
+        // Deteksi STABIL berbasis RENTANG 6 frame terakhir (~0.6 dtk).
+        // Selama angka masih bergerak (naik/turun) rentang >> 0.3 kg ->
+        // false; setelah angka diam, 6 frame berisi nilai serupa -> true.
+        // Deteksi keranjang baru ditangani di tickAutoLoop ("turun lalu
+        // naik"), jadi jendela pendek ini aman.
+        // Catatan: angka yang melewati nilai yang sama berturut saat turun
+        // dulu sekali-kali dianggap stabil — itu sebabnya re-arm TIDAK
+        // pernah terjadi saat turun (hanya saat naik lagi, lihat tickAutoLoop).
         let wStableWin = [];
-        const W_STABLE_FRAMES = 15;
+        const W_STABLE_FRAMES = 6;
         function __wStable(w) {
             if (!(w > 0)) { wStableWin = []; return false; }
             wStableWin.push(w);
             if (wStableWin.length > W_STABLE_FRAMES) wStableWin.shift();
-            // Butuh jendela PENUH (~2 dtk) supaya angka yang masih bergerak
-            // tidak pernah lolos. Setelah keranjang benar-benar diam, 20
-            // frame berisi nilai yang sama (range ~0) -> baru stabil.
+            // ~0.6 dtk jendela penuh supaya angka yang masih bergerak tidak
+            // lolos. Transisi (turun/naik) rentang >> 0.3 kg -> false.
             if (wStableWin.length < W_STABLE_FRAMES) return false;
             const mn = Math.min(...wStableWin);
             const mx = Math.max(...wStableWin);
@@ -211,7 +210,7 @@
                 autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
                 manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
-                rearmDropKg: {{ (float) ($settings->auto_rearm_drop_kg ?? 10) }},
+                rearmDropKg: {{ (float) ($settings->auto_rearm_drop_kg ?? 5) }},
                 mode: '{{ $mode ?? 'mesin' }}',
 
                 isConnected: false,
@@ -284,6 +283,7 @@
                 autoStart: false,
                 autoStopped: false,
                 lastBasketW: null,
+                minSinceRecord: null,
                 lowStreak: 0,
 
                 isSampling: false,
@@ -408,7 +408,7 @@
                 get autoStatusText() {
                     if (!this.canWeigh) return 'TIMBANGAN PUTUS';
                     if (this.isSampling) return `MENGHITUNG ${this.samplingTotalSec} DETIK… JANGAN ANGKAT`;
-                    if (!this.autoArmed) return `TERCATAT — ANGKAT KERANJANG (TURUN ≥ ${this.rearmDropKg} KG)`;
+                    if (!this.autoArmed) return `TERCATAT — TARIK, LALU TARUH LAGI (TURUN+NAIK ≥ ${this.rearmDropKg} KG)`;
                     return 'TARUH KERANJANG (>10 KG)';
                 },
 
@@ -1033,6 +1033,7 @@
                     this.autoArmed = true;
                     wStableWin = [];
                     this.lastBasketW = null;
+                    this.minSinceRecord = null;
                     this.lowStreak = 0;
                     loopCooldownUntil = 0;
                     this.autoCount = 0;
@@ -1141,23 +1142,36 @@
                     if (!this.isConnected) return;
                     if (this.autoArmed && w > this.triggerKg && __wStable(w) && Date.now() >= loopCooldownUntil) {
                         this.autoArmed = false;
-                        // Simpan berat saat trigger sebagai acuan "turun berapa
-                        // kg" untuk re-arm (walau sampling nanti dibatalkan).
+                        // Simpan berat saat trigger sebagai acuan & reset
+                        // titik terendah (dipakai deteksi "turun lalu naik").
                         this.lastBasketW = w;
+                        this.minSinceRecord = w;
                         this.lowStreak = 0;
                         this.startSampling();
                     } else if (!this.autoArmed) {
-                        // RE-ARM HANYA saat berat TURUN minimal rearmDropKg
-                        // (default 10 kg) dari keranjang terakhir (lastBasketW).
-                        // Ditinjau dari video operator: keranjang lama selalu
-                        // ditarik keluar penuh sebelum keranjang baru masuk,
-                        // sehingga berat pasti turun drastis. Turun sampai
-                        // 0.0 pun termasuk (otomatis >= 10 kg).
-                        // Harus BERTAHAN ~0.5 dtk (5 tick @100ms) supaya noise
-                        // OCR 1 frame tidak memicu re-arm palsu.
-                        const dropped = (this.lastBasketW != null && (this.lastBasketW - w) >= this.rearmDropKg);
-                        this.lowStreak = dropped ? (this.lowStreak + 1) : 0;
-                        if (!this.showResult && this.lowStreak >= 5) {
+                        // DETEKSI "TURUN LALU NAIK" — tahan terhadap tukar
+                        // keranjang yang SANGAT CEPAT (angka tidak sempat
+                        // menyentuh 0):
+                        //   1) catat titik TERENDAH sejak record terakhir;
+                        //   2) re-arm hanya bila berat PERNAH turun >= drop
+                        //      (tanda keranjang lama memang ditarik);
+                        //   3) SETELAH ITU, berat harus naik lagi >= drop
+                        //      (tanda keranjang baru masuk) sebelum boleh
+                        //      sampling — dengan begini sampling TIDAK
+                        //      dimulai saat angka masih di dasar turun
+                        //      (penyebab record 483 = campuran turun + naik).
+                        if (this.lastBasketW != null) {
+                            if (this.minSinceRecord == null || w < this.minSinceRecord) {
+                                this.minSinceRecord = w;
+                            }
+                        }
+                        const dropped = (this.lastBasketW != null && this.minSinceRecord != null
+                            && (this.lastBasketW - this.minSinceRecord) >= this.rearmDropKg);
+                        const roseBack = (dropped && w >= (this.minSinceRecord + this.rearmDropKg));
+                        // Harus BERTAHAN ~0.4 dtk (4 tick @100ms) supaya noise 1 frame
+                        // tidak memicu re-arm palsu.
+                        this.lowStreak = roseBack ? (this.lowStreak + 1) : 0;
+                        if (!this.showResult && this.lowStreak >= 4) {
                             this.autoArmed = true;
                             this.lowStreak = 0;
                             wStableWin = [];
@@ -1360,7 +1374,7 @@
                 var st = (root && root._x_dataStack) ? root._x_dataStack[0] : null;
                 if (!st || !st.autoLoop) { el.textContent = 'LOOP: MATI'; return; }
                 var phase = st.isSampling ? ('MENGHITUNG ' + (st.samplingTotalSec || 2) + ' DETIK… JANGAN ANGKAT')
-                    : (!st.autoArmed ? 'TERCATAT — ANGKAT KERANJANG (TURUN ≥ ' + st.rearmDropKg + ' KG)' : 'SIAP — TARUH KERANJANG (>10 KG)');
+                    : (!st.autoArmed ? 'TERCATAT — TARIK, LALU TARUH LAGI (TURUN+NAIK ≥ ' + st.rearmDropKg + ' KG)' : 'SIAP — TARUH KERANJANG (>10 KG)');
                 el.textContent = 'LOOP: JALAN • #' + st.autoCount + ' • '
                     + Number(st.autoTotalNetto || 0).toFixed(2) + ' kg • ' + phase;
             } catch (e) {}
