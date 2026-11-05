@@ -159,9 +159,9 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm text-gray-700">Re-arm Bawah (kg)</label>
-                    <input type="number" name="auto_rearm_kg" value="{{ $settings->auto_rearm_kg ?? 20 }}" step="0.5" min="5" max="100" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                    <p class="text-gray-600 text-xs mt-2">Setelah sebuah keranjang tercatat, auto loop baru SIAP RECORD LAGI saat berat turun di bawah nilai ini (harus bertahan ~0.6 detik biar noise 1 frame tidak memicu). Di atas nilai ini tidak akan record — supaya keranjang yang sama tidak ke-record berulang. Contoh: 20 = keranjang ditukar baru record lagi.</p>
+                    <label class="block text-sm text-gray-700">Re-arm Kosong (kg)</label>
+                    <input type="number" name="auto_rearm_kg" value="{{ $settings->auto_rearm_kg ?? 2 }}" step="0.5" min="0.5" max="20" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="text-gray-600 text-xs mt-2">Setelah sebuah keranjang tercatat, auto loop baru SIAP RECORD LAGI saat scale benar-benar KOSONG (berat di bawah nilai ini, bertahan ~1 detik). Dengan begini keranjang yang sama TIDAK PERNAH ter-record ganda — hanya keranjang baru yang masuk setelah scale 0.0 yang akan tercatat.</p>
                     @error('auto_rearm_kg') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
                 </div>
 
@@ -294,7 +294,7 @@
                 <li>• Letakkan keranjang → Auto trigger saat berat > {{ $settings->auto_trigger_kg }}kg</li>
                 <li>• Sampling {{ $settings->auto_duration_sec }} detik otomatis</li>
                 <li>• Beep + counter increment saat tersimpan</li>
-                <li>• Setelah record, SIAP lagi saat berat &lt; {{ $settings->auto_rearm_kg ?? 20 }}kg (atau &lt; {{ $settings->auto_empty_kg }}kg)</li>
+                <li>• Setelah record, SIAP lagi saat scale &lt; {{ $settings->auto_rearm_kg ?? 2 }}kg (benar-benar kosong)</li>
             </ul>
         </div>
 
