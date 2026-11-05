@@ -173,31 +173,24 @@
         // Data grafik JUGA di luar state Alpine (alasan sama: mutasi array
         // reaktif 10x/detik + Chart.js = stack overflow).
         let chartPoints = Array(50).fill(0);
-        // Deteksi STABIL berbasis WAKTU (bukan 10 sampel × 100ms = 1 dtk):
-        // angka dianggap mantap bila berubah < 0.10 kg selama 400ms. Lebih
-        // cepat nangkep di kerja hectic, tanpa ikut menyampling angka yang
-        // masih naik/turun. Reset otomatis tiap keranjang baru di-arm.
-        let wStableRef = null;
-        let wStableSince = 0;
-        let wRecent = [];            // jendela nilai terakhir untuk median
+        // Deteksi STABIL berbasis RENTANG beberapa frame terakhir:
+        // Stabilitas ditentukan dari RENTANG beberapa frame terakhir, bukan
+        // median. Median masih menyisakan nilai lama dari sebelum keranjang
+        // ditaruh, sehingga saat angka melonjak (0 -> 33 kg) median tertahan
+        // rendah dan dianggap stabil -> salah record saat barang masih gerak.
+        // Sekarang: stabil HANYA jika nilai terbaru tidak berbeda jauh dari
+        // min/max jendela (mis. 0.3 kg) dalam minimal 4 frame terakhir.
+        let wStableWin = [];
         function __wStable(w) {
-            const now = Date.now();
-            if (!(w > 0)) { wStableRef = null; wRecent = []; return false; }
-            // Median dari beberapa frame terakhir: tahan outlier OCR sesaat
-            // (mis. satu frame kebaca 20.90 di tengah 20.80 yang diam). Angka
-            // yang SUDAH berhenti tidak boleh dianggap "belum stabil" hanya
-            // karena satu-dua frame noise.
-            wRecent.push(w);
-            if (wRecent.length > 5) wRecent.shift();
-            const sorted = [...wRecent].sort((a, b) => a - b);
-            const med = sorted[Math.floor(sorted.length / 2)];
-            // Toleransi 0.25 kg terhadap REFERENSI (median awal), jendela 150 ms.
-            if (wStableRef === null || Math.abs(med - wStableRef) > 0.25) {
-                wStableRef = med;
-                wStableSince = now;
-                return false;
-            }
-            return (now - wStableSince) >= 150;
+            if (!(w > 0)) { wStableWin = []; return false; }
+            wStableWin.push(w);
+            if (wStableWin.length > 6) wStableWin.shift();
+            // Butuh minimal 4 frame (≈0.6-1.2 dtk) untuk memastikan angka sudah
+            // settle. Selama naik/turun, rentang >> 0.3 kg sehingga return false.
+            if (wStableWin.length < 4) return false;
+            const mn = Math.min(...wStableWin);
+            const mx = Math.max(...wStableWin);
+            return (mx - mn) <= 0.3;
         }
         // Cooldown pendek (~400ms) setelah selesai sampling, supaya tidak
         // langsung trigger ulang saat berat masih di sekitar nilai record.
@@ -1035,8 +1028,7 @@
                     this.autoLoop = true;
                     this.autoStopped = false;
                     this.autoArmed = true;
-                    wStableRef = null;
-                    wRecent = [];
+                    wStableWin = [];
                     this.lastBasketW = null;
                     this.lowStreak = 0;
                     loopCooldownUntil = 0;
@@ -1165,8 +1157,7 @@
                         if (!this.showResult && this.lowStreak >= 5) {
                             this.autoArmed = true;
                             this.lowStreak = 0;
-                            wStableRef = null;
-                            wRecent = [];
+                            wStableWin = [];
                         }
                     }
                 },
