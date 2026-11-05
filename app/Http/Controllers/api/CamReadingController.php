@@ -1009,12 +1009,17 @@ class CamReadingController extends Controller
         }
         $starting = ! $alive && $pidAge !== null && $pidAge < 90;
 
-        // Bacaan terakhir = detak jantung service (lebih akurat dari PID).
-        $station = ScaleStation::where('code', $stationCode)->first();
-        $last = $station
-            ? CamReading::where('scale_station_id', $station->id)->orderByDesc('id')->first()
-            : null;
-        $lastAge = $last ? (int) abs(now()->diffInSeconds($last->weighed_at)) : null;
+        // Bacaan terakhir = LIVE CACHE dari cam_ocr.py (diupdate tiap frame,
+        // independen dari daemon yang persist ke DB). Dulu dari tabel
+        // CamReading, tapi daemon sekarang tidak insert DB lagi -> selalu
+        // dianggap "tidak ada bacaan baru (24 jam)" walau kamera sehat.
+        $live = Cache::get("live_weight:{$stationCode}:cam");
+        $lastAge = null;
+        $lastWeight = null;
+        if (is_array($live) && isset($live['weight'], $live['at'])) {
+            $lastWeight = (float) $live['weight'];
+            $lastAge = (int) abs(now()->diffInSeconds(now()->parse($live['at'])));
+        }
 
         return response()->json([
             'station' => $stationCode,
@@ -1022,7 +1027,7 @@ class CamReadingController extends Controller
             'starting' => $starting,
             'pid' => $pid ?: null,
             'started_at' => $info['started_at'] ?? null,
-            'last_weight' => $last?->ocr_weight !== null ? (float) $last->ocr_weight : null,
+            'last_weight' => $lastWeight,
             'last_age_seconds' => $lastAge,
             // Segar = ada bacaan < 10 detik terakhir (ritme ~2-3 dtk + toleransi).
             'fresh' => $lastAge !== null && $lastAge <= 10,
