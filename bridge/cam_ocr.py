@@ -1866,13 +1866,14 @@ def main() -> int:
                         print(f"[{ts}] Tahan ({weight:.2f} kg ≈ 1/10 dari {prev_w:.2f}) — tunggu konfirmasi.")
                     # Anti crash-to-nol (display/glare bikin 1-2 frame kebaca
                     # 0.00 atau sangat kecil padahal berat stabil): bila dari
-                    # nilai stabil >=5 kg mendadak <30%, TAHAN — tapi hanya
-                    # untuk beberapa frame pertama. Kalau terus rendah
-                    # (keranjang memang diangkat), biarkan lewat supaya re-arm
-                    # tetap bisa. Ini mencegah 0.00 palsu memicu auto-loop.
+                    # nilai stabil >=5 kg mendadak <30%, TAHAN untuk 1 frame
+                    # (streak 1). Kalau frame berikutnya juga rendah
+                    # (berarti memang kosong / keranjang diangkat), langsung
+                    # dilepas — waktu sangat penting di pabrik: guard terlalu
+                    # lama bikin layar "lama ke 0" dan re-arm telat.
                     elif prev_w >= 5.0 and weight < prev_w * 0.30:
                         crash_low_streak += 1
-                        if crash_low_streak < 4:
+                        if crash_low_streak < 2:
                             held = True
                             print(f"[{ts}] Tahan (turun drastis {prev_w:.2f} -> {weight:.2f}, "
                                   f"streak {crash_low_streak}) — tunggu konfirmasi.")
