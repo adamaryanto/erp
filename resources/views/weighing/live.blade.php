@@ -215,7 +215,7 @@
                 autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
                 manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
-                autoDropKg: {{ (float) ($settings->auto_drop_kg ?? 5) }},
+                rearmKg: {{ (float) ($settings->auto_rearm_kg ?? 20) }},
                 mode: '{{ $mode ?? 'mesin' }}',
 
                 isConnected: false,
@@ -412,7 +412,7 @@
                 get autoStatusText() {
                     if (!this.canWeigh) return 'TIMBANGAN PUTUS';
                     if (this.isSampling) return `MENGHITUNG ${this.samplingTotalSec} DETIK… JANGAN ANGKAT`;
-                    if (!this.autoArmed) return `TERCATAT — ANGKAT KERANJANG (TURUN > ${this.autoDropKg} KG)`;
+                    if (!this.autoArmed) return `TERCATAT — TUNGGU TURUN < ${this.rearmKg} KG`;
                     return 'TARUH KERANJANG (>10 KG)';
                 },
 
@@ -1152,19 +1152,15 @@
                         this.lowStreak = 0;
                         this.startSampling();
                     } else if (!this.autoArmed) {
-                        // RE-ARM hanya bila keranjang BENAR-BENAR diangkat/ditukar.
-                        // Dua kondisi:
-                        //   (a) berat di bawah emptyKg (kosong), ATAU
-                        //   (b) berat turun minimal autoDropKg dari keranjang
-                        //       terakhir (lastBasketW).
-                        // KEDUANYA harus BERTAHAN ~0.6 dtk (3 tick @200ms). Satu
-                        // frame noise OCR yang kebaca 0.00 (sering terjadi saat
-                        // display berganti/glare) TIDAK boleh memicu re-arm ->
-                        // dulu inilah biang "auto loop jalan terus" walau
-                        // keranjang diam.
-                        const isEmpty = (w < this.emptyKg);
-                        const dropped = (this.lastBasketW != null && (this.lastBasketW - w) >= this.autoDropKg);
-                        this.lowStreak = (isEmpty || dropped) ? (this.lowStreak + 1) : 0;
+                        // RE-ARM HANYA saat berat di bawah rearmKg (default 20 kg).
+                        // Setelah sebuah keranjang tercatat, loop baru siap record
+                        // lagi setelah berat sempat turun ke bawah nilai ini
+                        // (keranjang ditukar / kosong). Di atas itu TIDAK record —
+                        // keranjang yang sama tidak ke-record berulang.
+                        // Harus BERTAHAN ~0.6 dtk (3 tick @200ms) supaya 1 frame
+                        // noise OCR yang kebaca 0.00 tidak memicu re-arm palsu.
+                        const isEmpty = (w < this.rearmKg);
+                        this.lowStreak = isEmpty ? (this.lowStreak + 1) : 0;
                         if (!this.showResult && this.lowStreak >= 3) {
                             this.autoArmed = true;
                             this.lowStreak = 0;
@@ -1369,7 +1365,7 @@
                 var st = (root && root._x_dataStack) ? root._x_dataStack[0] : null;
                 if (!st || !st.autoLoop) { el.textContent = 'LOOP: MATI'; return; }
                 var phase = st.isSampling ? ('MENGHITUNG ' + (st.samplingTotalSec || 2) + ' DETIK… JANGAN ANGKAT')
-                    : (!st.autoArmed ? 'TERCATAT — ANGKAT KERANJANG (TURUN > ' + st.autoDropKg + ' KG)' : 'SIAP — TARUH KERANJANG (>10 KG)');
+                    : (!st.autoArmed ? 'TERCATAT — TUNGGU TURUN < ' + st.rearmKg + ' KG' : 'SIAP — TARUH KERANJANG (>10 KG)');
                 el.textContent = 'LOOP: JALAN • #' + st.autoCount + ' • '
                     + Number(st.autoTotalNetto || 0).toFixed(2) + ' kg • ' + phase;
             } catch (e) {}
