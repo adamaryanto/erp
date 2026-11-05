@@ -94,6 +94,22 @@ def parse_roi(s: str) -> tuple[float, float, float, float]:
     return (x, y, w, h)
 
 
+def _is_digit_drop(prev_w: float, weight: float) -> bool:
+    """True jika `weight` SAMA PERSIS dengan `prev_w` dengan TEPAT SATU
+    digit '0' dihapus. Contoh: prev=20.60 -> weight=2.60 (digit '0' di
+    tengah hilang). Ini misread paling umum pada display 7-segment saat
+    refresh; bukan penurunan berat sungguhan."""
+    a = f"{prev_w:.2f}".replace(".", "")
+    b = f"{weight:.2f}".replace(".", "")
+    if len(a) - len(b) != 1:
+        return False
+    # Coba hapus setiap '0' satu per satu; cocok jika salah satunya == b.
+    for i, ch in enumerate(a):
+        if ch == "0" and a[:i] + a[i + 1:] == b:
+            return True
+    return False
+
+
 _INSTANCE_LOCK_FH = None
 
 
@@ -1861,19 +1877,30 @@ def main() -> int:
                 held = False
                 if recent_ok:
                     prev_w = recent_ok[-1][1]
-                    if prev_w >= 2.0 and abs(weight * 10 - prev_w) <= max(0.6, prev_w * 0.05):
-                        held = True
-                        print(f"[{ts}] Tahan ({weight:.2f} kg ≈ 1/10 dari {prev_w:.2f}) — tunggu konfirmasi.")
-                    # Anti crash-to-nol (display/glare bikin 1-2 frame kebaca
-                    # 0.00 atau sangat kecil padahal berat stabil): bila dari
-                    # nilai stabil >=5 kg mendadak <30%, TAHAN untuk 1 frame
-                    # (streak 1). Kalau frame berikutnya juga rendah
-                    # (berarti memang kosong / keranjang diangkat), langsung
-                    # dilepas — waktu sangat penting di pabrik: guard terlalu
-                    # lama bikin layar "lama ke 0" dan re-arm telat.
+                    # Digit '0' hilang di tengah angka (paling sering di
+                    # display Balanza saat refresh): mis. "20.60" kebaca
+                    # "2.60" (turun 90%) atau "15.28" kebaca "1.28".
+                    # Bila nilai baru SAMA PERSIS prev dengan SATU digit '0'
+                    # dihapus, ini pasti misread — TAHAN (sampai 2 frame).
+                    if prev_w >= 2.0 and _is_digit_drop(prev_w, weight):
+                        crash_low_streak += 1
+                        if crash_low_streak < 3:
+                            held = True
+                            print(f"[{ts}] Tahan (digit '0' hilang {prev_w:.2f} -> {weight:.2f}, "
+                                  f"streak {crash_low_streak}) — tunggu konfirmasi.")
+                    elif prev_w >= 2.0 and abs(weight * 10 - prev_w) <= max(0.6, prev_w * 0.05):
+                        crash_low_streak += 1
+                        if crash_low_streak < 3:
+                            held = True
+                            print(f"[{ts}] Tahan ({weight:.2f} kg ≈ 1/10 dari {prev_w:.2f}) — tunggu konfirmasi.")
+                    # Anti crash-to-nol: bila dari nilai stabil >=5 kg mendadak
+                    # <30%, TAHAN sampai 2 frame (streak 1-2). Frame ke-3 dilepas
+                    # — jadi keranjang yang benar-benar diangkat tetap lolos,
+                    # tapi noise 1-2 frame (paling sering '2.60' dari '20.60')
+                    # tidak memicu live cache / re-arm palsu.
                     elif prev_w >= 5.0 and weight < prev_w * 0.30:
                         crash_low_streak += 1
-                        if crash_low_streak < 2:
+                        if crash_low_streak < 3:
                             held = True
                             print(f"[{ts}] Tahan (turun drastis {prev_w:.2f} -> {weight:.2f}, "
                                   f"streak {crash_low_streak}) — tunggu konfirmasi.")
