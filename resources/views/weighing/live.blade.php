@@ -173,21 +173,24 @@
         // Data grafik JUGA di luar state Alpine (alasan sama: mutasi array
         // reaktif 10x/detik + Chart.js = stack overflow).
         let chartPoints = Array(50).fill(0);
-        // Deteksi STABIL berbasis RENTANG beberapa frame terakhir:
-        // Stabilitas ditentukan dari RENTANG beberapa frame terakhir, bukan
-        // median. Median masih menyisakan nilai lama dari sebelum keranjang
-        // ditaruh, sehingga saat angka melonjak (0 -> 33 kg) median tertahan
-        // rendah dan dianggap stabil -> salah record saat barang masih gerak.
-        // Sekarang: stabil HANYA jika nilai terbaru tidak berbeda jauh dari
-        // min/max jendela (mis. 0.3 kg) dalam minimal 4 frame terakhir.
+        // Deteksi STABIL berbasis RENTANG beberapa frame terakhir.
+        // PENTING: stabil harus lebih lama & lebih ketat daripada sekadar
+        // "4 frame terakhir mirip", karena saat keranjang DITARIK turun
+        // angka bisa melintasi nilai yang sama selama ~1 detik (mis. 13.96)
+        // dan itu dulu dianggap stabil -> sampling menangkap campuran
+        // turun + naik (record sampah). Sekarang stabil HANYA jika
+        // 15 pembacaan berturut (~1.5 dtk) semuanya dalam rentang <= 0.3 kg.
+        // Saat angka masih bergerak (naik/turun), rentang >> 0.3 kg.
         let wStableWin = [];
+        const W_STABLE_FRAMES = 15;
         function __wStable(w) {
             if (!(w > 0)) { wStableWin = []; return false; }
             wStableWin.push(w);
-            if (wStableWin.length > 6) wStableWin.shift();
-            // Butuh minimal 4 frame (≈0.6-1.2 dtk) untuk memastikan angka sudah
-            // settle. Selama naik/turun, rentang >> 0.3 kg sehingga return false.
-            if (wStableWin.length < 4) return false;
+            if (wStableWin.length > W_STABLE_FRAMES) wStableWin.shift();
+            // Butuh jendela PENUH (~2 dtk) supaya angka yang masih bergerak
+            // tidak pernah lolos. Setelah keranjang benar-benar diam, 20
+            // frame berisi nilai yang sama (range ~0) -> baru stabil.
+            if (wStableWin.length < W_STABLE_FRAMES) return false;
             const mn = Math.min(...wStableWin);
             const mx = Math.max(...wStableWin);
             return (mx - mn) <= 0.3;
