@@ -1292,7 +1292,7 @@
                             this.autoTotalNetto += Number(saved.weighing.net_kg || 0);
                             this.triggerToast(`Auto #${this.autoCount} tercatat: ${Number(saved.weighing.net_kg || 0).toFixed(2)} kg`);
                         } else {
-                            this.triggerToast('Bukti Timbang Berhasil Disimpan (ID #' + saved.weighing.id + ')');
+                            this.triggerToast('Timbang tercatat: ' + Number(saved.weighing.net_kg || 0).toFixed(2) + ' kg');
                         }
                     } catch (e) {
                         this.triggerToast('Gagal simpan ke server — ulangi');
