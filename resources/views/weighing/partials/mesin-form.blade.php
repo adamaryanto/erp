@@ -76,8 +76,8 @@
 
     <div class="pt-2 border-t border-gray-100">
         <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
-            <input type="checkbox" x-model="autoStart" @change="saveSession()" class="w-4 h-4 rounded">
-            <span class="text-xs text-gray-600">Otomatis jalan saat konek (sesi diingat)</span>
+            <input type="checkbox" x-model="autoSaveResult" @change="saveSession()" class="w-4 h-4 rounded">
+            <span class="text-xs text-gray-600">Otomatis simpan setelah timbang (langsung tercatat, tanpa perlu klik SIMPAN)</span>
         </label>
         <button @click="toggleAutoLoop()" type="button"
                 :disabled="!canWeigh && !autoLoop"

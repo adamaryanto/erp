@@ -280,7 +280,7 @@
                 autoArmed: true,
                 autoCount: 0,
                 autoTotalNetto: 0,
-                autoStart: false,
+                autoSaveResult: true,
                 autoStopped: false,
                 lastBasketW: null,
                 minSinceRecord: null,
@@ -428,7 +428,6 @@
                         this.liveStatus = 'STABIL';
                         this.triggerToast('USB tersambung — baca timbangan langsung, tanpa bridge');
                         this.readUsbLoop(port);
-                        this.maybeAutoStart();
                     } catch (e) {
                         if (e && (e.name === 'NotFoundError' || e.name === 'AbortError')) return;
                         this.triggerToast('Gagal buka USB: ' + ((e && e.message) || e));
@@ -586,8 +585,6 @@
                         this.isConnected = this.backendConnected;
                         if (!this.isConnected) {
                             this.autoStopped = false;
-                        } else if (!was) {
-                            this.maybeAutoStart();
                         }
                         if (this.backendWeight !== null) {
                             this.liveRawWeight = this.backendWeight;
@@ -999,8 +996,8 @@
                         if (s.jenis) this.jenisAyam = s.jenis;
                         if (s.basket) this.selectedKeranjang = s.basket;
                         if (s.station && this.stations.includes(s.station)) this.selectedStation = s.station;
-                        const a = localStorage.getItem('timbang_autostart_v2');
-                        if (a !== null) this.autoStart = (a === '1');
+                        const sv = localStorage.getItem('timbang_autosave');
+                        if (sv !== null) this.autoSaveResult = (sv === '1');
                     } catch (e) {}
                 },
                 saveSession() {
@@ -1013,7 +1010,7 @@
                             basket: this.selectedKeranjang,
                             station: this.selectedStation,
                         }));
-                        localStorage.setItem('timbang_autostart_v2', this.autoStart ? '1' : '0');
+                        localStorage.setItem('timbang_autosave', this.autoSaveResult ? '1' : '0');
                     } catch (e) {}
                 },
                 sessionComplete() {
@@ -1041,11 +1038,6 @@
                     this.saveSession();
                     this.triggerToast(manual ? 'Auto loop JALAN — taruh keranjang pertama' : 'Konek — auto jalan sendiri, taruh keranjang');
                     return true;
-                },
-                maybeAutoStart() {
-                    if (!this.autoStart || this.autoLoop || this.autoStopped) return;
-                    if (!this.canWeigh || !this.sessionComplete()) return;
-                    this.startAuto(false);
                 },
                 init() {
                     // Hook buat watchdog eksternal (script polos di bawah): tetap bisa
@@ -1255,7 +1247,11 @@
                     // Cooldown pendek saja: 400ms cukup agar tidak langsung
                     // trigger ulang saat berat masih di sekitar nilai record.
                     loopCooldownUntil = Date.now() + 400;
-                    if (this.autoLoop) setTimeout(() => this.saveResult(true), 600);
+                    // Simpan otomatis setelah run jika checkbox "auto simpan"
+                    // dicentang; kalau tidak, user harus klik SIMPAN manual.
+                    // (Catatan: biarkan flag `auto` mencerminkan mode saat ini
+                    // biar toast auto loop tampil "Auto #N" seperti biasa.)
+                    if (this.autoSaveResult) setTimeout(() => this.saveResult(this.autoLoop), 600);
                 },
                 async saveResult(auto = false) {
                     if (!this.resultData) return;
