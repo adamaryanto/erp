@@ -611,10 +611,11 @@ class CamReadingController extends Controller
         }
 
         $roi = $validated['roi'] ?? Setting::config()->cam_roi ?: '0.28,0.38,0.44,0.26';
-        // Default interval cepat (0.3 dtk ~ 3 frame/detik) untuk pabrik
-        // hectic: angka timbangan ikut bergerak cepat. LED web tetap
-        // responsif karena frame cepat update live cache.
-        $interval = (string) ($validated['interval'] ?? 0.3);
+        // Default interval 0.15 dtk (~6-7 frame/detik): wajib cepat supaya
+        // saat tukar keranjang sangat cepat (angka turun hanya 5-10 kg
+        // lalu naik lagi, tanpa melewati nol), penurunan tetap tertangkap.
+        // LED web tetap responsif karena frame cepat update live cache.
+        $interval = (string) ($validated['interval'] ?? 0.15);
         $safe = strtoupper(preg_replace('/[^A-Z0-9]+/i', '', $station));
         $stopFile = $this->stopFile($station);
         $pidFile = $this->pidFile($station);

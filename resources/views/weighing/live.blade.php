@@ -698,7 +698,7 @@
                         const res = await fetch('/api/cam/service/start', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation, interval: 0.5 }),
+                            body: JSON.stringify({ station: this.selectedStation, interval: 0.15 }),
                         });
                         const data = await res.json();
                         if (data.status === 'error') {
@@ -740,7 +740,7 @@
                         const res = await fetch('/api/cam/service/start', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ station: this.selectedStation, interval: 0.5 }),
+                            body: JSON.stringify({ station: this.selectedStation, interval: 0.15 }),
                         });
                         const data = await res.json();
                         if (data.status === 'running') {
