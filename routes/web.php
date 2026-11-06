@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/', [WeighingLiveController::class, 'index'])->name('home');
 Route::get('/timbang-cam', [WeighingLiveController::class, 'cam'])->name('cam.index');
+Route::view('/hitung-ayam', 'hitung.index')->name('hitung.index');
 // Proxy pratinjau: RTSP/MJPEG → 1 frame JPEG (browser tak bisa putar RTSP).
 Route::get('/timbang-cam/snapshot', [CamReadingController::class, 'liveSnapshot'])->name('cam.snapshot');
 Route::view('/timbang-cam/test-display', 'weighing.test-display')->name('cam.test-display');

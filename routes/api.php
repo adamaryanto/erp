@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\api\CamReadingController;
+use App\Http\Controllers\api\HangingCountController;
 use App\Http\Controllers\api\WeighingController;
 use App\Http\Controllers\CounterController;
 use App\Http\Controllers\DiagnoseController;
@@ -44,3 +45,6 @@ Route::post('/cam/roi/auto', [CamReadingController::class, 'autoRoi']);
     Route::post('/cam/roi/autocal', [CamReadingController::class, 'autoCalibrate']);
     Route::get('/cam/roi/status', [CamReadingController::class, 'calibrationStatus']);
     Route::get('/cam/service/status', [CamReadingController::class, 'serviceStatus']);
+// Hitung ayam gantung dari kamera (halaman /hitung-ayam).
+Route::post('/hitung/batch', [HangingCountController::class, 'store']);
+Route::get('/hitung/history', [HangingCountController::class, 'history']);
