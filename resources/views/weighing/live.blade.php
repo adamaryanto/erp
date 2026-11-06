@@ -208,7 +208,7 @@
                 selectedStation: (@json($stations[0]->code ?? 'POS-01')),
                 triggerKg: {{ $settings->auto_trigger_kg ?? 10 }},
                 autoDurationSec: {{ (float) ($settings->auto_duration_sec ?? 2) }},
-                manualDurationSec: {{ (int) ($settings->duration_sec ?? 5) }},
+                manualDurationSec: {{ (int) ($settings->duration_sec ?? 2) }},
                 emptyKg: {{ $settings->auto_empty_kg ?? 2 }},
                 rearmDropKg: {{ (float) ($settings->auto_rearm_drop_kg ?? 5) }},
                 mode: '{{ $mode ?? 'mesin' }}',

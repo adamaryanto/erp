@@ -109,8 +109,9 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm text-gray-700">Durasi Sampling (detik)</label>
+                    <label class="block text-sm text-gray-700">Durasi Sampling Manual (detik)</label>
                     <input type="number" name="duration_sec" value="{{ $settings->duration_sec }}" min="1" max="60" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <p class="text-gray-600 text-xs mt-2">Durasi sampling saat mode manual (tanpa auto loop). Samakan dengan Auto Duration bila ingin sama cepat.</p>
                     @error('duration_sec') <p class="text-red-600 text-xs mt-1">{{ $message }}</p> @enderror
                 </div>
 
@@ -277,8 +278,7 @@
             <ul class="text-blue-800 text-sm space-y-2">
                 <li>• Untuk testing & quality control</li>
                 <li>• Manual isi supplier, mobil, keranjang per penimbangan</li>
-                <li>• Klik "TIMBANG 5 DETIK" untuk mulai sampling</li>
-                <li>• Klik "SIMPAN" untuk menyimpan hasil</li>
+                <li>• Sampling manual {{ $settings->duration_sec }} detik, lalu klik "SIMPAN"</li>
             </ul>
         </div>
 

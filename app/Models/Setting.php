@@ -28,7 +28,7 @@ class Setting extends Model
             'parity' => 'N',
             'parsing_regex' => '/STX\s+([\d.]+)\s+kg/',
             'sampling_hz' => 10,
-            'duration_sec' => 5,
+            'duration_sec' => 2,
             'trim_percent' => 10,
             'unstable_threshold_kg' => 0.8,
             'simulate_mode' => false,
