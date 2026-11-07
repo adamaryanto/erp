@@ -229,13 +229,13 @@
     let lastTick = 0;
     function loopTick() {
         const now = performance.now();
-        if (now - lastTick < 500) return; // ambil snapshot tiap 0.5 dtk
+        if (now - lastTick < 150) return; // ambil snapshot tiap 0,15 dtk (~6-7 fps, efek video)
         lastTick = now;
         frameProcess();
         drawOverlay();
         reloadFrame();
     }
-    setInterval(loopTick, 250);
+    setInterval(loopTick, 50);
 
     // klik untuk set titik
     overlayCanvas.addEventListener('pointerdown', (e) => {
