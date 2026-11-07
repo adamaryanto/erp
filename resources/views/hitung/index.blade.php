@@ -85,6 +85,7 @@
                     <input type="range" id="maskThr" min="0" max="100" value="35" class="w-full">
                 </div>
                 <button id="btnAutoHsv" class="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded uppercase">⚡ AUTO HSV (deteksi dari gambar)</button>
+                <button id="btnAutoPoint" class="w-full py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded uppercase">◎ AUTO TITIK (taruh di badan ayam)</button>
                 <p id="hsvMsg" class="text-[11px] text-slate-400">Baca warna ayam dari area terang di jalur rel pada frame saat ini.</p>
                 <div>
                     <label class="flex items-center justify-between text-xs font-semibold text-slate-600">Arah rel</label>
@@ -247,27 +248,25 @@
         const motionFrac = tot && prevGray ? mOn / tot : 0;
         prevGray = gray;
 
-        // hitung berbasis WARNA saja (gerak di video ini konstan -> tidak
-        // bisa buat re-arm). Histeresis: naik >= hi -> hitung 1 & kunci;
-        // turun <= lo -> buka kunci lagi (celah antar ayam).
+        // hitung pada TEPI NAIK: kosong -> ayam = 1. Langsung, setiap
+        // kali titik terdeteksi ayam lagi setelah sempat kosong.
         const hi = S.maskThr;
         const lo = Math.min(0.12, hi * 0.4);
         const isChicken = frac >= hi;
-        const isClear = frac <= lo;
         chickenState.textContent = isChicken ? 'AYAM' : (frac > lo ? 'statis' : 'kosong');
         chickenState.className = 'font-mono text-xl font-black ' + (isChicken ? 'text-emerald-400' : 'text-slate-500');
         dbgLine.textContent = `warna ${frac.toFixed(2)} · gerak ${motionFrac.toFixed(2)}`;
 
         if (running) {
             const now = Date.now();
-            if (armed && isChicken && now - lastCountAt > 300) {
+            if (isChicken && !wasChicken && now - lastCountAt > 300) {
                 count += 1;
                 lastCountAt = now;
-                armed = false;
                 counterBig.textContent = count;
-            } else if (!armed && isClear) {
-                armed = true;
             }
+            wasChicken = isChicken;
+        } else {
+            wasChicken = isChicken;
         }
     }
 
