@@ -55,6 +55,7 @@
                 <div class="text-right">
                     <div class="text-[10px] uppercase text-slate-400">Titik terdeteksi ayam?</div>
                     <div class="font-mono text-xl font-black" id="chickenState">—</div>
+                    <div class="font-mono text-[10px] text-slate-400" id="dbgLine">warna — · gerak —</div>
                 </div>
             </div>
 
@@ -119,7 +120,8 @@
     const octx = overlayCanvas.getContext('2d');
 
     const counterBig = document.getElementById('counterBig');
-    const chickenState = document.getElementById('chickenState');
+        const chickenState = document.getElementById('chickenState');
+        const dbgLine = document.getElementById('dbgLine');
     const camStatus = document.getElementById('camStatus');
 
     // Titik rel NORMALIZED [0..1, 0..1]
@@ -127,7 +129,9 @@
     let running = false;
     let count = 0;
     let wasChicken = false;
+    let armed = true;
     let lastCountAt = 0;
+    let prevGray = null;
     let direction = 'L2R';
 
     const S = {
@@ -219,35 +223,49 @@
         mctx.imageSmoothingEnabled = false;
         mctx.drawImage(proc, 0, 0, PROC_W, PROC_H, 0, 0, vw, vh);
 
+        // grayscale frame ini buat banding gerakan vs frame sebelumnya
+        const gray = new Uint8ClampedArray(PROC_W * PROC_H);
+        for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+            gray[j] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        }
+
         // sample titik (radius ~6px low-res)
         const px = Math.floor(point.x * PROC_W), py = Math.floor(point.y * PROC_H);
         const R = 5;
         let onCnt = 0, tot = 0;
+        let mOn = 0;
         for (let dy = -R; dy <= R; dy++) {
             for (let dx = -R; dx <= R; dx++) {
                 const x = px + dx, y = py + dy;
                 if (x < 0 || y < 0 || x >= PROC_W || y >= PROC_H) continue;
                 tot++;
                 if (md[(y * PROC_W + x) * 4] > 127) onCnt++;
+                if (prevGray && Math.abs(gray[y * PROC_W + x] - prevGray[y * PROC_W + x]) > 28) mOn++;
             }
         }
         const frac = tot ? onCnt / tot : 0;
+        const motionFrac = tot && prevGray ? mOn / tot : 0;
+        prevGray = gray;
 
-        // state deteksi ayam
-        const isChicken = frac >= S.maskThr;
+        // hitung dgn histeresis: naik di atas batas atas (hi) = 1 ayam;
+        // kunci sampai turun di bawah batas bawah (lo) dulu (celah antar ayam)
+        const hi = S.maskThr;
+        const lo = Math.min(0.10, hi * 0.4);
+        const isChicken = frac >= hi;
         chickenState.textContent = isChicken ? 'AYAM' : 'kosong';
         chickenState.className = 'font-mono text-xl font-black ' + (isChicken ? 'text-emerald-400' : 'text-slate-500');
+        dbgLine.textContent = `warna ${frac.toFixed(2)} · gerak ${motionFrac.toFixed(2)}`;
 
         if (running) {
             const now = Date.now();
-            if (isChicken && !wasChicken && now - lastCountAt > 300) {
+            if (armed && isChicken && now - lastCountAt > 300) {
                 count += 1;
                 lastCountAt = now;
+                armed = false;
                 counterBig.textContent = count;
+            } else if (!armed && frac <= lo) {
+                armed = true;
             }
-            wasChicken = isChicken;
-        } else {
-            wasChicken = isChicken;
         }
     }
 
@@ -281,7 +299,7 @@
 
     $('btnStart').addEventListener('click', () => { running = true; });
     $('btnStop').addEventListener('click', () => { running = false; });
-    $('btnReset').addEventListener('click', () => { running = false; count = 0; counterBig.textContent = '0'; wasChicken = false; });
+    $('btnReset').addEventListener('click', () => { running = false; count = 0; counterBig.textContent = '0'; wasChicken = false; armed = true; lastCountAt = 0; prevGray = null; });
     $('btnCam').addEventListener('click', reloadFrame);
 
     function setSlider(id, val) {
