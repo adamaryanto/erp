@@ -6,25 +6,26 @@
     <div class="flex items-center justify-between border-b border-slate-200 pb-3">
         <div>
             <h1 class="text-xl font-bold text-slate-800">Hitung Ayam Gantung</h1>
-            <p class="text-xs text-slate-500">Uji coba: kamera menyorot monitor/rail yang memutar video ayam gantung. Alat ini menghitung ayam yang lewat pada titik yang Anda pilih.</p>
+            <p class="text-xs text-slate-500">Pakai IP CAM yang sama dengan Timbang Cam (Snapshot/Stream URL di Pengaturan). Aimed ke monitor/rail yang memutar video ayam gantung; alat menghitung ayam yang lewat pada titik yang Anda pilih.</p>
         </div>
         <a href="{{ route('cam.index') }}" class="text-xs text-blue-600 underline">Ke Timbang Cam →</a>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {{-- KOLOM KIRI: video + mask --}}
+        {{-- KOLOM KIRI: snapshot IP cam + mask --}}
         <div class="lg:col-span-2 bg-white rounded-lg border border-slate-200 shadow-sm p-3 space-y-2">
             <div class="flex gap-2 text-xs font-bold text-gray-600">
-                <span class="text-emerald-700">Kamera langsung</span> /
+                <span class="text-emerald-700">Snapshot IP Cam</span> /
                 <span class="text-slate-500">Mask HSV</span>
+                <span id="camStatus" class="ml-auto text-[11px] font-mono text-slate-400">memuat…</span>
             </div>
 
             <div class="relative w-full bg-black rounded overflow-hidden select-none" id="stageWrap" style="aspect-ratio: 4 / 3;">
-                <video id="camVideo" playsinline autoplay muted class="absolute inset-0 w-full h-full object-fill"></video>
+                <img id="camFrame" alt="Kamera IP" class="absolute inset-0 w-full h-full object-fill" draggable="false">
                 <canvas id="maskCanvas" class="absolute inset-0 w-full h-full object-fill opacity-90 pointer-events-none"></canvas>
                 <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full object-fill cursor-crosshair"></canvas>
             </div>
-            <p class="text-[11px] text-slate-400">Klik pada gambar di atas untuk set titik rel (titik hijau = deteksi). Titik harus berada di perjalanan ayam, tidak di background kosong.</p>
+            <p class="text-[11px] text-slate-400">Klik pada gambar di atas untuk set titik rel (titik hijau = deteksi). Titik harus berada di perjalanan ayam, tidak di background kosong. Source = Snapshot/Stream URL di Pengaturan → sama seperti Timbang Cam.</p>
 
             <div class="flex items-center justify-between bg-slate-900 rounded p-3 text-white">
                 <div>
@@ -42,7 +43,7 @@
                 <button id="btnStop" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded uppercase">STOP</button>
                 <button id="btnReset" class="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded uppercase">RESET</button>
                 <button id="btnSave" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded uppercase">SIMPAN BATCH</button>
-                <button id="btnCam" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold rounded uppercase">Hidupkan Kamera</button>
+                <button id="btnCam" class="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold rounded uppercase">Refresh Kamera</button>
             </div>
         </div>
 
@@ -89,17 +90,17 @@
 
 <script>
 (function () {
-    const video = document.getElementById('camVideo');
+    const frameImg = document.getElementById('camFrame');
     const maskCanvas = document.getElementById('maskCanvas');
     const overlayCanvas = document.getElementById('overlayCanvas');
-    const stageWrap = document.getElementById('stageWrap');
     const mctx = maskCanvas.getContext('2d', { willReadFrequently: true });
     const octx = overlayCanvas.getContext('2d');
 
     const counterBig = document.getElementById('counterBig');
     const chickenState = document.getElementById('chickenState');
+    const camStatus = document.getElementById('camStatus');
 
-    // titik rel NORMALIZED [0..1, 0..1]
+    // Titik rel NORMALIZED [0..1, 0..1]
     let point = { x: 0.5, y: 0.6 };
     let running = false;
     let count = 0;
@@ -118,16 +119,22 @@
     $('maskThr').addEventListener('input', (e) => { S.maskThr = +e.target.value / 100; $('thrV').textContent = S.maskThr.toFixed(2); });
     document.querySelectorAll('input[name=dir]').forEach((el) => el.addEventListener('change', () => { direction = el.value; }));
 
-    async function startCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, height: { ideal: 720 } } });
-            video.srcObject = stream;
-            await video.play();
-            loop();
-        } catch (e) {
-            alert('Kamera tidak bisa diakses: ' + (e && e.message || e));
-        }
+    const SNAP_URL = @json(route('cam.snapshot'));
+
+    function reloadFrame() {
+        frameImg.src = SNAP_URL + (SNAP_URL.includes('?') ? '&' : '?') + 'v=' + Date.now();
     }
+
+    frameImg.addEventListener('load', () => {
+        if (frameImg.naturalWidth) {
+            camStatus.textContent = 'kamera OK';
+            camStatus.className = 'ml-auto text-[11px] font-mono text-emerald-600';
+        }
+    });
+    frameImg.addEventListener('error', () => {
+        camStatus.textContent = 'kamera tidak terjangkau — cek IP + URL di Pengaturan';
+        camStatus.className = 'ml-auto text-[11px] font-mono text-rose-600';
+    });
 
     function rgbToHsv(r, g, b) {
         r /= 255; g /= 255; b /= 255;
@@ -151,13 +158,13 @@
     const pctx = proc.getContext('2d', { willReadFrequently: true });
 
     function frameProcess() {
-        if (video.readyState < 2) return;
-        pctx.drawImage(video, 0, 0, PROC_W, PROC_H);
+        if (!frameImg.naturalWidth) return;
+        pctx.drawImage(frameImg, 0, 0, PROC_W, PROC_H);
         const img = pctx.getImageData(0, 0, PROC_W, PROC_H);
         const data = img.data;
 
-        // mask canvas display ukuran == video
-        const vw = video.videoWidth || PROC_W, vh = video.videoHeight || PROC_H;
+        // mask canvas display ukuran == gambar asli
+        const vw = frameImg.naturalWidth, vh = frameImg.naturalHeight;
         if (maskCanvas.width !== vw) maskCanvas.width = vw;
         if (maskCanvas.height !== vh) maskCanvas.height = vh;
         if (overlayCanvas.width !== vw) overlayCanvas.width = vw;
@@ -167,13 +174,11 @@
         // low-res mask build
         const mask = mctx.createImageData(PROC_W, PROC_H);
         const md = mask.data;
-        let hit = 0;
         for (let i = 0; i < data.length; i += 4) {
             const [h, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
             const on = h >= S.hMin && h <= S.hMax && s >= S.sMin && s <= S.sMax && v >= S.vMin && v <= S.vMax;
             const o = (i / 4) * 4;
             md[o] = on ? 255 : 0; md[o + 1] = on ? 255 : 0; md[o + 2] = on ? 255 : 0; md[o + 3] = 255;
-            if (on) hit++;
         }
         pctx.putImageData(mask, 0, 0);
         // up-scale ke tampilan
@@ -222,14 +227,15 @@
     }
 
     let lastTick = 0;
-    function loop() {
-        requestAnimationFrame(loop);
+    function loopTick() {
         const now = performance.now();
-        if (now - lastTick < 100) return; // ~10 fps cukup
+        if (now - lastTick < 500) return; // ambil snapshot tiap 0.5 dtk
         lastTick = now;
         frameProcess();
         drawOverlay();
+        reloadFrame();
     }
+    setInterval(loopTick, 250);
 
     // klik untuk set titik
     overlayCanvas.addEventListener('pointerdown', (e) => {
@@ -242,7 +248,7 @@
     $('btnStart').addEventListener('click', () => { running = true; });
     $('btnStop').addEventListener('click', () => { running = false; });
     $('btnReset').addEventListener('click', () => { running = false; count = 0; counterBig.textContent = '0'; wasChicken = false; });
-    $('btnCam').addEventListener('click', startCamera);
+    $('btnCam').addEventListener('click', reloadFrame);
 
     $('btnSave').addEventListener('click', async () => {
         if (count <= 0) { alert('Belum ada ayam terhitung dalam batch ini.'); return; }
@@ -275,6 +281,7 @@
     }
     $('btnReloadHist').addEventListener('click', loadHistory);
     loadHistory();
+    reloadFrame();
 })();
 </script>
 @endsection
