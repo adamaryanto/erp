@@ -250,6 +250,26 @@ class CamReadingController extends Controller
 
         // JPEG diam: biarkan browser ambil langsung.
         if (! $this->isStreamUrl($url)) {
+            // Halaman hitung butuh byte same-origin agar canvas tidak tainted
+            // (getImageData canvas cross-origin melempar SecurityError dan
+            // membekukan loop JS). Proxy JPEG via server untuk kasus ini.
+            if ($request->boolean('embedded')) {
+                try {
+                    $ctx = stream_context_create(['http' => ['timeout' => 5]]);
+                    $bin = @file_get_contents($url, false, $ctx);
+                } catch (\Throwable $e) {
+                    $bin = false;
+                }
+                if ($bin === false || strlen($bin) < 1000) {
+                    return response('snapshot gagal dimuat dari kamera', 502);
+                }
+
+                return response($bin, 200, [
+                    'Content-Type' => 'image/jpeg',
+                    'Cache-Control' => 'no-store, max-age=0',
+                ]);
+            }
+
             return redirect($url);
         }
 

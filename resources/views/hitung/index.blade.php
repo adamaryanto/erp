@@ -119,7 +119,7 @@
     $('maskThr').addEventListener('input', (e) => { S.maskThr = +e.target.value / 100; $('thrV').textContent = S.maskThr.toFixed(2); });
     document.querySelectorAll('input[name=dir]').forEach((el) => el.addEventListener('change', () => { direction = el.value; }));
 
-    const SNAP_URL = @json(route('cam.snapshot'));
+    const SNAP_URL = @json(route('cam.snapshot', ['embedded' => 1]));
 
     function reloadFrame() {
         frameImg.src = SNAP_URL + (SNAP_URL.includes('?') ? '&' : '?') + 'v=' + Date.now();
@@ -158,10 +158,15 @@
     const pctx = proc.getContext('2d', { willReadFrequently: true });
 
     function frameProcess() {
-        if (!frameImg.naturalWidth) return;
-        pctx.drawImage(frameImg, 0, 0, PROC_W, PROC_H);
-        const img = pctx.getImageData(0, 0, PROC_W, PROC_H);
-        const data = img.data;
+        try {
+            if (!frameImg.naturalWidth) return;
+            pctx.drawImage(frameImg, 0, 0, PROC_W, PROC_H);
+            const img = pctx.getImageData(0, 0, PROC_W, PROC_H);
+            const data = img.data;
+        } catch (e) {
+            // Canvas tainted (CORS) atau frame rusak — jangan matikan loop.
+            return;
+        }
 
         // mask canvas display ukuran == gambar asli
         const vw = frameImg.naturalWidth, vh = frameImg.naturalHeight;
