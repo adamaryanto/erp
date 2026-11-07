@@ -1,6 +1,26 @@
 @extends('layouts.app')
 @section('title', 'Hitung Ayam Gantung')
 
+@php
+    $settingsHitung = \App\Models\Setting::config();
+    $snapUrl = trim((string) ($settingsHitung->cam_snapshot_url ?? ''));
+    $streamUrl = trim((string) ($settingsHitung->cam_stream_url ?? ''));
+    $isStreamUrl = fn ($u) => (bool) preg_match('#^rtsp://|mjpe?g|videofeed|videostream|action=stream|nphmotion|getoneshot|\.mjpg\b#i', $u);
+    $isRtspUrl = fn ($u) => (bool) preg_match('#^rtsp://#i', $u);
+    // Seperti pratinjau Timbang Cam: MJPEG (videofeed) -> video langsung di <img>;
+    // snapshot/RTSP -> snapshot polling lewat server.
+    if ($streamUrl !== '' && ! $isRtspUrl($streamUrl)) {
+        $hitungSrc = $streamUrl;
+        $hitungStreamMode = true;
+    } elseif ($snapUrl !== '') {
+        $hitungSrc = route('cam.snapshot', ['embedded' => 1]);
+        $hitungStreamMode = false;
+    } else {
+        $hitungSrc = '';
+        $hitungStreamMode = false;
+    }
+@endphp
+
 @section('content')
 <div class="space-y-4">
     <div class="flex items-center justify-between border-b border-slate-200 pb-3">
@@ -21,11 +41,11 @@
             </div>
 
             <div class="relative w-full bg-black rounded overflow-hidden select-none" id="stageWrap" style="aspect-ratio: 4 / 3;">
-                <img id="camFrame" alt="Kamera IP" class="absolute inset-0 w-full h-full object-fill" draggable="false">
+                <img id="camFrame" src="{{ $hitungSrc }}" alt="Kamera IP" class="absolute inset-0 w-full h-full object-fill" draggable="false" crossorigin="anonymous" referrerpolicy="no-referrer">
                 <canvas id="maskCanvas" class="absolute inset-0 w-full h-full object-fill opacity-90 pointer-events-none"></canvas>
                 <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full object-fill cursor-crosshair"></canvas>
             </div>
-            <p class="text-[11px] text-slate-400">Klik pada gambar di atas untuk set titik rel (titik hijau = deteksi). Titik harus berada di perjalanan ayam, tidak di background kosong. Source = Snapshot/Stream URL di Pengaturan → sama seperti Timbang Cam.</p>
+            <p class="text-[11px] text-slate-400">Klik pada gambar di atas untuk set titik rel (titik hijau = deteksi). Titik harus berada di perjalanan ayam, tidak di background kosong. {{ $hitungStreamMode ? 'Mode video MJPEG (seperti Timbang Cam) — tanpa refresh.' : 'Mode snapshot JPG dari server (RTSP tidak bisa diputar langsung di browser).' }}</p>
 
             <div class="flex items-center justify-between bg-slate-900 rounded p-3 text-white">
                 <div>
@@ -120,8 +140,15 @@
     document.querySelectorAll('input[name=dir]').forEach((el) => el.addEventListener('change', () => { direction = el.value; }));
 
     const SNAP_URL = @json(route('cam.snapshot', ['embedded' => 1]));
+    const STREAM_SRC = @json($hitungSrc);
+    const IS_STREAM = @json($hitungStreamMode);
 
     function reloadFrame() {
+        if (IS_STREAM) {
+            // MJPEG: sambungkan ulang stream bila putus
+            frameImg.src = STREAM_SRC;
+            return;
+        }
         frameImg.src = SNAP_URL + (SNAP_URL.includes('?') ? '&' : '?') + 'v=' + Date.now();
     }
 
@@ -234,11 +261,11 @@
     let lastTick = 0;
     function loopTick() {
         const now = performance.now();
-        if (now - lastTick < 150) return; // ambil snapshot tiap 0,15 dtk (~6-7 fps, efek video)
+        if (now - lastTick < 150) return; // ~6-7 fps
         lastTick = now;
         frameProcess();
         drawOverlay();
-        reloadFrame();
+        if (!IS_STREAM) reloadFrame(); // MJPEG sudah mengalir sendiri
     }
     setInterval(loopTick, 50);
 
@@ -286,7 +313,7 @@
     }
     $('btnReloadHist').addEventListener('click', loadHistory);
     loadHistory();
-    reloadFrame();
+    if (!IS_STREAM) reloadFrame();
 })();
 </script>
 @endsection
