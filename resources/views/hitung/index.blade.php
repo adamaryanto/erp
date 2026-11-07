@@ -81,8 +81,8 @@
                     <label class="block">V max <input type="range" id="vMax" min="0" max="255" value="255" class="w-full"><span id="vMaxV" class="font-mono text-slate-500">255</span></label>
                 </div>
                 <div>
-                    <label class="flex items-center justify-between text-xs font-semibold text-slate-600">Mask threshold (kotak putih)<span id="thrV" class="font-mono text-slate-500">0.45</span></label>
-                    <input type="range" id="maskThr" min="0" max="100" value="45" class="w-full">
+                    <label class="flex items-center justify-between text-xs font-semibold text-slate-600">Mask threshold (kotak putih)<span id="thrV" class="font-mono text-slate-500">0.35</span></label>
+                    <input type="range" id="maskThr" min="0" max="100" value="35" class="w-full">
                 </div>
                 <button id="btnAutoHsv" class="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded uppercase">⚡ AUTO HSV (deteksi dari gambar)</button>
                 <p id="hsvMsg" class="text-[11px] text-slate-400">Baca warna ayam dari area terang di jalur rel pada frame saat ini.</p>
@@ -135,7 +135,7 @@
     let direction = 'L2R';
 
     const S = {
-        hMin: 0, hMax: 179, sMin: 0, sMax: 30, vMin: 220, vMax: 255, maskThr: 0.45,
+        hMin: 0, hMax: 179, sMin: 0, sMax: 30, vMin: 220, vMax: 255, maskThr: 0.35,
     };
     const $ = (id) => document.getElementById(id);
     ['hMin','hMax','sMin','sMax','vMin','vMax'].forEach((k) => {
@@ -247,12 +247,14 @@
         const motionFrac = tot && prevGray ? mOn / tot : 0;
         prevGray = gray;
 
-        // hitung dgn histeresis: naik di atas batas atas (hi) = 1 ayam;
-        // kunci sampai turun di bawah batas bawah (lo) dulu (celah antar ayam)
+        // hitung berbasis WARNA saja (gerak di video ini konstan -> tidak
+        // bisa buat re-arm). Histeresis: naik >= hi -> hitung 1 & kunci;
+        // turun <= lo -> buka kunci lagi (celah antar ayam).
         const hi = S.maskThr;
-        const lo = Math.min(0.10, hi * 0.4);
+        const lo = Math.min(0.12, hi * 0.4);
         const isChicken = frac >= hi;
-        chickenState.textContent = isChicken ? 'AYAM' : 'kosong';
+        const isClear = frac <= lo;
+        chickenState.textContent = isChicken ? 'AYAM' : (frac > lo ? 'statis' : 'kosong');
         chickenState.className = 'font-mono text-xl font-black ' + (isChicken ? 'text-emerald-400' : 'text-slate-500');
         dbgLine.textContent = `warna ${frac.toFixed(2)} · gerak ${motionFrac.toFixed(2)}`;
 
@@ -263,7 +265,7 @@
                 lastCountAt = now;
                 armed = false;
                 counterBig.textContent = count;
-            } else if (!armed && frac <= lo) {
+            } else if (!armed && isClear) {
                 armed = true;
             }
         }
