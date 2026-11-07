@@ -83,6 +83,8 @@
                     <label class="flex items-center justify-between text-xs font-semibold text-slate-600">Mask threshold (kotak putih)<span id="thrV" class="font-mono text-slate-500">0.45</span></label>
                     <input type="range" id="maskThr" min="0" max="100" value="45" class="w-full">
                 </div>
+                <button id="btnAutoHsv" class="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded uppercase">⚡ AUTO HSV (deteksi dari gambar)</button>
+                <p id="hsvMsg" class="text-[11px] text-slate-400">Baca warna ayam dari area terang di jalur rel pada frame saat ini.</p>
                 <div>
                     <label class="flex items-center justify-between text-xs font-semibold text-slate-600">Arah rel</label>
                     <div class="flex gap-2 mt-1 text-xs">
@@ -281,6 +283,69 @@
     $('btnStop').addEventListener('click', () => { running = false; });
     $('btnReset').addEventListener('click', () => { running = false; count = 0; counterBig.textContent = '0'; wasChicken = false; });
     $('btnCam').addEventListener('click', reloadFrame);
+
+    function setSlider(id, val) {
+        const el = $(id);
+        el.value = val;
+        $(id + 'V').textContent = val;
+        S[id] = val; // langsung update state (tanpa menunggu event input)
+    }
+
+    // AUTO HSV: ambil statistik HSV dari piksel terang (ayam) di jalur rel pada frame saat ini,
+    // lalu set slider S/V otomatis (seperti AUTO ROI di timbangan).
+    function autoHsv() {
+        const msg = $('hsvMsg');
+        if (!frameImg.naturalWidth) {
+            msg.textContent = 'Tunggu gambar kamera muncul dulu.';
+            return;
+        }
+        pctx.drawImage(frameImg, 0, 0, PROC_W, PROC_H);
+        const img = pctx.getImageData(0, 0, PROC_W, PROC_H);
+        const data = img.data;
+
+        // 1) Cari terang maksimum di jalur rel (pita horizontal di sekitar titik)
+        const cy = Math.floor(point.y * PROC_H);
+        const bandH = 22;
+        const y0 = Math.max(0, cy - bandH), y1 = Math.min(PROC_H - 1, cy + bandH);
+        let maxV = 0;
+        for (let y = y0; y <= y1; y++) {
+            for (let x = 0; x < PROC_W; x++) {
+                const i = (y * PROC_W + x) * 4;
+                const v = Math.max(data[i], data[i + 1], data[i + 2]);
+                if (v > maxV) maxV = v;
+            }
+        }
+        if (maxV < 120) {
+            msg.textContent = 'Tidak ada area terang di jalur rel — geser titik tepat di jalur ayam, lalu coba lagi.';
+            return;
+        }
+
+        // 2) Kumpulkan piksel kandidat (terang & putih: V >= 75% maxV, S <= 120)
+        const thr = maxV * 0.75;
+        const ss = [], vs = [];
+        for (let y = y0; y <= y1; y++) {
+            for (let x = 0; x < PROC_W; x++) {
+                const i = (y * PROC_W + x) * 4;
+                const [h, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
+                if (v >= thr && s <= 120) { ss.push(s); vs.push(v); }
+            }
+        }
+        if (ss.length < 80) {
+            msg.textContent = 'Tidak cukup piksel ayam terdeteksi — tunggu ayam lewat titik, lalu tekan lagi.';
+            return;
+        }
+
+        // 3) Persentil -> batas S/V (hue dibiarkan full karena ayam putih: S rendah, hue tidak stabil)
+        const pct = (arr, p) => { const a = [...arr].sort((a, b) => a - b); return a[Math.floor(p * (a.length - 1))]; };
+        const sMax = Math.max(20, Math.min(255, Math.round(pct(ss, 0.9)) + 20));
+        const vMin = Math.max(0, Math.min(250, Math.round(pct(vs, 0.1)) - 25));
+
+        setSlider('hMin', 0); setSlider('hMax', 179);
+        setSlider('sMin', 0); setSlider('sMax', sMax);
+        setSlider('vMin', vMin); setSlider('vMax', 255);
+    }
+
+    $('btnAutoHsv').addEventListener('click', autoHsv);
 
     $('btnSave').addEventListener('click', async () => {
         if (count <= 0) { alert('Belum ada ayam terhitung dalam batch ini.'); return; }
