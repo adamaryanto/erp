@@ -829,9 +829,8 @@
                     };
                 },
                 roiPointerDown(e) {
-                    if (!this.roiImgLoaded || this.roiImgFailed) return;
                     const el = this.$refs.roiStage;
-                    if (!el) return;
+                    if (!el || e.target.closest('[data-roi-handle]')) return;
                     const p = this.roiPoint(e, el);
                     const inside = p.x >= this.roiX && p.x <= this.roiX + this.roiW && p.y >= this.roiY && p.y <= this.roiY + this.roiH;
                     if (inside) {

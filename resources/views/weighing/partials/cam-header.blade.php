@@ -250,10 +250,10 @@
                         <div class="absolute top-1/2 left-0 right-0 h-px bg-emerald-400/70 pointer-events-none"></div>
                         <span class="absolute left-1 top-1 text-[10px] font-black text-slate-900 bg-emerald-400 rounded px-1.5 py-0.5 pointer-events-none">KOTAK CROP</span>
                         <span class="absolute right-1 bottom-1 text-[10px] font-mono font-bold text-white bg-slate-900/80 rounded px-1.5 py-0.5 pointer-events-none" x-text="`${Math.round(roiW*100)}% × ${Math.round(roiH*100)}%`"></span>
-                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -top-2 -left-2 cursor-nwse-resize z-10" @pointerdown.stop="roiHandleDown($event,'nw')"></div>
-                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -top-2 -right-2 cursor-nesw-resize z-10" @pointerdown.stop="roiHandleDown($event,'ne')"></div>
-                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -bottom-2 -left-2 cursor-nesw-resize z-10" @pointerdown.stop="roiHandleDown($event,'sw')"></div>
-                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -bottom-2 -right-2 cursor-nwse-resize z-10" @pointerdown.stop="roiHandleDown($event,'se')"></div>
+                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -top-2 -left-2 cursor-nwse-resize z-10" data-roi-handle @pointerdown.stop="roiHandleDown($event,'nw')"></div>
+                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -top-2 -right-2 cursor-nesw-resize z-10" data-roi-handle @pointerdown.stop="roiHandleDown($event,'ne')"></div>
+                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -bottom-2 -left-2 cursor-nesw-resize z-10" data-roi-handle @pointerdown.stop="roiHandleDown($event,'sw')"></div>
+                        <div class="absolute w-4 h-4 bg-emerald-400 border-2 border-white rounded-sm -bottom-2 -right-2 cursor-nwse-resize z-10" data-roi-handle @pointerdown.stop="roiHandleDown($event,'se')"></div>
                     </div>
                 </div>
                 <p class="text-xs text-gray-600 font-bold">Atur ROI (0-1 = persen dari ukuran frame):</p>
