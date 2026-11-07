@@ -187,11 +187,11 @@
     const pctx = proc.getContext('2d', { willReadFrequently: true });
 
     function frameProcess() {
+        let data;
         try {
             if (!frameImg.naturalWidth) return;
             pctx.drawImage(frameImg, 0, 0, PROC_W, PROC_H);
-            const img = pctx.getImageData(0, 0, PROC_W, PROC_H);
-            const data = img.data;
+            data = pctx.getImageData(0, 0, PROC_W, PROC_H).data;
         } catch (e) {
             // Canvas tainted (CORS) atau frame rusak — jangan matikan loop.
             return;
