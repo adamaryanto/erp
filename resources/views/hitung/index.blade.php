@@ -49,7 +49,7 @@
 
             <div class="flex items-center justify-between bg-slate-900 rounded p-3 text-white">
                 <div>
-                    <div class="text-[10px] uppercase text-slate-400">Hitungan Ayam (batch)</div>
+                    <div class="text-[10px] uppercase text-slate-400">Hitungan Ayam (batch) <span id="runBadge" class="hidden ml-1 px-1.5 py-0.5 rounded bg-emerald-600 text-white font-bold text-[9px] animate-pulse">● MENGHITUNG</span></div>
                     <div class="font-mono text-4xl font-black text-emerald-400 leading-none" id="counterBig">0</div>
                 </div>
                 <div class="text-right">
@@ -297,9 +297,26 @@
         drawOverlay();
     });
 
-    $('btnStart').addEventListener('click', () => { running = true; });
-    $('btnStop').addEventListener('click', () => { running = false; });
-    $('btnReset').addEventListener('click', () => { running = false; count = 0; counterBig.textContent = '0'; wasChicken = false; armed = true; lastCountAt = 0; prevGray = null; });
+    $('btnStart').addEventListener('click', () => {
+        running = true;
+        armed = true;       // ayam pertama langsung dihitung
+        lastCountAt = 0;
+        prevGray = null;
+        $('runBadge').classList.remove('hidden');
+        $('btnStart').disabled = true;
+        $('btnStop').disabled = false;
+        $('btnStart').classList.add('opacity-40');
+        $('btnStop').classList.remove('opacity-40');
+    });
+    $('btnStop').addEventListener('click', () => {
+        running = false;
+        $('runBadge').classList.add('hidden');
+        $('btnStart').disabled = false;
+        $('btnStop').disabled = true;
+        $('btnStart').classList.remove('opacity-40');
+        $('btnStop').classList.add('opacity-40');
+    });
+    $('btnReset').addEventListener('click', () => { running = false; count = 0; counterBig.textContent = '0'; wasChicken = false; armed = true; lastCountAt = 0; prevGray = null; $('runBadge').classList.add('hidden'); $('btnStart').disabled = false; $('btnStop').disabled = true; $('btnStart').classList.remove('opacity-40'); $('btnStop').classList.add('opacity-40'); });
     $('btnCam').addEventListener('click', reloadFrame);
 
     function setSlider(id, val) {
