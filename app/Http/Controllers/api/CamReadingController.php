@@ -133,6 +133,21 @@ class CamReadingController extends Controller
      * hasilnya ke store() di atas, jadi live cache source=cam
      * otomatis terisi dan frontend tinggal polling.
      */
+    /**
+     * Base URL untuk daemon Python POST bacaan (cam_ocr.py --api-base).
+     * config('app.url') bisa 'project-erp.test' yang tidak ter-resolve
+     * di PC ini, jadi ambil dari Host request browser (pasti ter-resolve).
+     */
+    private function apiBase(Request $request): string
+    {
+        $base = $request->getSchemeAndHttpHost();
+        if ($base !== '') {
+            return $base;
+        }
+
+        return rtrim((string) config('app.url'), '/');
+    }
+
     public function capture(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -173,7 +188,7 @@ class CamReadingController extends Controller
             base_path('bridge/cam_ocr.py'),
             '--snapshot-url', $snapshotUrl,
             '--station', $station,
-            '--api-base', config('app.url'),
+            '--api-base', $this->apiBase($request),
             '--roi', $roi,
             '--rotate', (string) $rotate,
             '--once',
@@ -672,7 +687,7 @@ class CamReadingController extends Controller
                 $this->pythonBin(), base_path('bridge/cam_ocr.py')],
             ['--snapshot-url', $snapshotUrl,
                 '--station', $station,
-                '--api-base', (string) config('app.url'),
+                '--api-base', $this->apiBase($request),
                 '--roi', $roi,
                 '--rotate', (string) ($settings->cam_rotate ?? 0),
                 '--interval', $interval,
