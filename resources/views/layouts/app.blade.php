@@ -48,12 +48,14 @@
                                 <span>Penimbangan (Live Cam)</span>
                             </div>
                         </a>
+                        {{-- Menu Hitung Ayam Gantung — dinonaktifkan sementara, fokus ke timbangan.
                         <a href="{{ route('hitung.index') }}" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-l-md text-xs transition-colors {{ request()->routeIs('hitung.*') ? 'bg-blue-50 text-[#1976D2] border-r-4 border-[#1976D2]' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900' }}">
                             <div class="flex items-center gap-3">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v18m6-18v18M3 7h4m10 0h4M3 12h18M3 17h4m10 0h4"></path></svg>
                                 <span>Hitung Ayam Gantung</span>
                             </div>
                         </a>
+                        --}}
                         <a href="{{ route('history.index') }}" class="w-full flex items-center justify-between px-3 py-2.5 rounded-l-md text-xs transition-colors {{ request()->routeIs('history.*') ? 'bg-blue-50 text-[#1976D2] border-r-4 border-[#1976D2]' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900' }}">
                                 <div class="flex items-center gap-3">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
