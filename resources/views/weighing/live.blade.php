@@ -818,6 +818,9 @@
                     this.roiImgLoaded = false;
                     this.roiImgSrc = base + (base.includes('?') ? '&' : '?') + 'v=' + Date.now();
                 },
+                roiFullFrame() {
+                    this.roiX = 0; this.roiY = 0; this.roiW = 1; this.roiH = 1;
+                },
                 roiPoint(e, el) {
                     const r = el.getBoundingClientRect();
                     return {
