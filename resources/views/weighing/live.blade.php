@@ -275,6 +275,10 @@
                 roiSaveBusy: false,
                 roiTestResult: '',
                 roiTestWeight: null,
+                roiImgSrc: '',
+                roiImgLoaded: false,
+                roiImgFailed: false,
+                roiDrag: null,
                 
                 autoLoop: false,
                 autoArmed: true,
@@ -799,7 +803,80 @@
                     this.roiCalibrateOpen = true;
                     this.roiTestResult = '';
                     this.roiTestWeight = null;
+                    this.roiImgLoaded = false;
+                    this.roiImgFailed = false;
+                    this.roiRefreshFrame();
                     this.pullRoi();
+                },
+                roiRefreshFrame() {
+                    // Ambil frame terbaru dari endpoint snapshot yang sama dengan pratinjau.
+                    const img = this.$refs.roiImg;
+                    const base = (img && img.dataset && img.dataset.src)
+                        ? img.dataset.src
+                        : (document.querySelector('div[x-data="camPreview()"]')?.dataset.url || '');
+                    if (!base) { this.roiImgSrc = ''; return; }
+                    this.roiImgLoaded = false;
+                    this.roiImgSrc = base + (base.includes('?') ? '&' : '?') + 'v=' + Date.now();
+                },
+                roiPoint(e, el) {
+                    const r = el.getBoundingClientRect();
+                    return {
+                        x: Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width))),
+                        y: Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height))),
+                    };
+                },
+                roiPointerDown(e) {
+                    if (!this.roiImgLoaded || this.roiImgFailed) return;
+                    const el = this.$refs.roiStage;
+                    if (!el) return;
+                    const p = this.roiPoint(e, el);
+                    const inside = p.x >= this.roiX && p.x <= this.roiX + this.roiW && p.y >= this.roiY && p.y <= this.roiY + this.roiH;
+                    if (inside) {
+                        this.roiDrag = { mode: 'move', ox: p.x - this.roiX, oy: p.y - this.roiY };
+                    } else {
+                        this.roiDrag = { mode: 'new', sx: p.x, sy: p.y };
+                        this.roiX = p.x; this.roiY = p.y; this.roiW = 0.01; this.roiH = 0.01;
+                    }
+                    el.setPointerCapture && el.setPointerCapture(e.pointerId);
+                },
+                roiHandleDown(e, corner) {
+                    e.stopPropagation();
+                    const el = this.$refs.roiStage;
+                    if (!el) return;
+                    this.roiDrag = { mode: corner, x: this.roiX, y: this.roiY, w: this.roiW, h: this.roiH };
+                    el.setPointerCapture && el.setPointerCapture(e.pointerId);
+                },
+                roiPointerMove(e) {
+                    if (!this.roiDrag) return;
+                    const el = this.$refs.roiStage;
+                    if (!el) return;
+                    const p = this.roiPoint(e, el);
+                    const d = this.roiDrag;
+                    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+                    if (d.mode === 'move') {
+                        this.roiX = clamp(p.x - d.ox, 0, Math.max(0, 1 - this.roiW));
+                        this.roiY = clamp(p.y - d.oy, 0, Math.max(0, 1 - this.roiH));
+                    } else if (d.mode === 'new') {
+                        this.roiX = Math.min(d.sx, p.x);
+                        this.roiY = Math.min(d.sy, p.y);
+                        this.roiW = Math.max(0.01, Math.abs(p.x - d.sx));
+                        this.roiH = Math.max(0.01, Math.abs(p.y - d.sy));
+                    } else {
+                        let x = d.x, y = d.y, w = d.w, h = d.h;
+                        if (d.mode.includes('e')) { w = clamp(p.x - d.x, 0.02, Math.max(0.02, 1 - d.x)); }
+                        if (d.mode.includes('w')) { const nx = clamp(p.x, 0, d.x + d.w - 0.02); w = d.x + d.w - nx; x = nx; }
+                        if (d.mode.includes('s')) { h = clamp(p.y - d.y, 0.02, Math.max(0.02, 1 - d.y)); }
+                        if (d.mode.includes('n')) { const ny = clamp(p.y, 0, d.y + d.h - 0.02); h = d.y + d.h - ny; y = ny; }
+                        this.roiX = x; this.roiY = y; this.roiW = w; this.roiH = h;
+                    }
+                },
+                roiPointerEnd() {
+                    if (!this.roiDrag) return;
+                    this.roiDrag = null;
+                    this.roiX = +this.roiX.toFixed(3);
+                    this.roiY = +this.roiY.toFixed(3);
+                    this.roiW = +this.roiW.toFixed(3);
+                    this.roiH = +this.roiH.toFixed(3);
                 },
                 async pullRoi() {
                     // Tarik ROI tersimpan dari server → isi form modal.

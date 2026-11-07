@@ -232,6 +232,28 @@
         </div>
         <div class="p-4 flex-1 overflow-auto">
             <div class="space-y-3">
+                <div class="flex items-center gap-2">
+                    <p class="text-xs text-gray-600 font-bold flex-1">Seret pada gambar untuk menggambar kotak ROI, seret kotak untuk menggeser, seret titik sudut untuk mengubah ukuran:</p>
+                    <button @click="roiRefreshFrame()" class="px-2.5 py-1 text-[11px] font-bold rounded border border-gray-300 text-gray-600 hover:bg-gray-50">↻ Frame baru</button>
+                </div>
+                <div x-ref="roiStage" class="relative bg-slate-900 rounded overflow-hidden select-none touch-none" style="cursor:crosshair" @pointerdown="roiPointerDown($event)" @pointermove="roiPointerMove($event)" @pointerup="roiPointerEnd($event)" @pointercancel="roiPointerEnd($event)">
+                    <img x-ref="roiImg" :src="roiImgSrc" data-src="{{ $camPreview ?? '' }}" alt="Frame kamera" class="w-full block" draggable="false" x-on:load="roiImgLoaded = true; roiImgFailed = false" x-on:error="roiImgFailed = true">
+                    <div x-show="roiImgFailed" class="absolute inset-0 flex items-center justify-center text-amber-300 text-xs font-bold p-4 text-center">Frame gagal dimuat — kamera tidak terjangkau / RTSP belum jalan</div>
+                    <template x-if="roiImgLoaded && !roiImgFailed">
+                        <div>
+                            <div class="absolute bg-black/50" :style="`left:0;top:0;width:100%;height:${roiY*100}%`"></div>
+                            <div class="absolute bg-black/50" :style="`left:0;top:${(roiY+roiH)*100}%;width:100%;height:${(1-roiY-roiH)*100}%`"></div>
+                            <div class="absolute bg-black/50" :style="`left:0;top:${roiY*100}%;width:${roiX*100}%;height:${roiH*100}%`"></div>
+                            <div class="absolute bg-black/50" :style="`left:${(roiX+roiW)*100}%;top:${roiY*100}%;width:${(1-roiX-roiW)*100}%;height:${roiH*100}%`"></div>
+                            <div class="absolute border-2 border-emerald-400 bg-emerald-400/10" :style="`left:${roiX*100}%;top:${roiY*100}%;width:${roiW*100}%;height:${roiH*100}%`" style="cursor:move">
+                                <div class="absolute w-3 h-3 bg-emerald-400 border border-white -top-1.5 -left-1.5 cursor-nwse-resize" @pointerdown.stop="roiHandleDown($event,'nw')"></div>
+                                <div class="absolute w-3 h-3 bg-emerald-400 border border-white -top-1.5 -right-1.5 cursor-nesw-resize" @pointerdown.stop="roiHandleDown($event,'ne')"></div>
+                                <div class="absolute w-3 h-3 bg-emerald-400 border border-white -bottom-1.5 -left-1.5 cursor-nesw-resize" @pointerdown.stop="roiHandleDown($event,'sw')"></div>
+                                <div class="absolute w-3 h-3 bg-emerald-400 border border-white -bottom-1.5 -right-1.5 cursor-nwse-resize" @pointerdown.stop="roiHandleDown($event,'se')"></div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
                 <p class="text-xs text-gray-600 font-bold">Atur ROI (0-1 = persen dari ukuran frame):</p>
                 <div class="grid grid-cols-4 gap-2">
                     <label class="text-xs">X: <input type="number" step="0.01" min="0" max="1" x-model.number="roiX" class="w-full h-8 border rounded px-2 font-mono text-sm"></label>
