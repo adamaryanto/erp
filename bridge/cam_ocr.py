@@ -1256,6 +1256,9 @@ def main() -> int:
     ap.add_argument("--out", default="", help="path file JPEG output untuk --grab-only")
     ap.add_argument("--grab-timeout", type=float, default=8.0,
                     help="detik maksimum menunggu frame untuk --grab-only")
+    ap.add_argument("--latest-frame", default="",
+                    help="path file JPEG 'frame terakhir' yang diperbarui tiap siklus (dipakai "
+                         "pratinjau web saat service jalan, tanpa koneksi RTSP baru)")
     ap.add_argument("--input-file", default="",
                     help="frame JPEG statis untuk --auto-roi (tanpa buka RTSP lagi; dipakai kalibrasi web)")
     ap.add_argument("--result-file", default="",
@@ -1721,7 +1724,19 @@ def main() -> int:
             continue
         t_frame = time.time()  # pacing interval dihitung dari AWAL frame
         try:
-            img = apply_rotate(fetch_snapshot(source_url), args.rotate)
+            raw = fetch_snapshot(source_url)
+            # Simpan "frame terakhir" buat pratinjau web. Kamera consumer
+            # (EZVIZ H3C) cuma izinkan 1 sesi RTSP — kalau pratinjau web
+            # buka koneksi RTSP sendiri, dua koneksi saling memutus.
+            # Pratinjau server membaca file ini saat service jalan.
+            if args.latest_frame:
+                try:
+                    _tmp = args.latest_frame + ".tmp"
+                    Path(_tmp).write_bytes(raw)
+                    Path(_tmp).replace(args.latest_frame)
+                except OSError:
+                    pass
+            img = apply_rotate(raw, args.rotate)
             if fail_streak >= CAMERA_FAIL_AFTER:
                 write_status(args.status_file, "running", "Kamera kembali terhubung.")
             fail_streak = 0

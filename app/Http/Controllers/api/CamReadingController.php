@@ -243,6 +243,7 @@ class CamReadingController extends Controller
         // sedikit toleransi biar tiap refresh benar-benar ambil frame baru.
         $previewSec = max(1, min(5, (int) ($settings->cam_preview_sec ?? 2)));
         $fresh = is_file($tmp) && (time() - (int) filemtime($tmp)) < $previewSec;
+        $station = strtoupper(trim((string) $request->query('station', 'POS-01')) ?: 'POS-01');
 
         // Kalibrasi ROI sedang jalan: JANGAN buka koneksi RTSP baru. Kamera
         // consumer (mis. EZVIZ H3C) sering cuma izinkan 1 sesi RTSP — kalau
@@ -262,6 +263,27 @@ class CamReadingController extends Controller
         }
 
         if (! $fresh) {
+            // Service OCR jalan: pakai frame terakhir dari service (1 sesi RTSP).
+            // Kamera consumer (EZVIZ H3C) cuma izinkan 1 sesi RTSP — kalau
+            // pratinjau ikut nembak koneksi baru, dua-duanya putus (timeout).
+            if ($this->heartbeatAlive($station)) {
+                $latest = $this->latestFrameFile($station);
+                if (is_file($latest) && (time() - (int) filemtime($latest)) < 15) {
+                    return response()->file($latest, [
+                        'Content-Type' => 'image/jpeg',
+                        'Cache-Control' => 'no-store, max-age=0',
+                    ]);
+                }
+                // Service hidup tapi frame basi (kamera gagal) — sajikan
+                // cache terakhir apa adanya, jangan buka sesi RTSP baru.
+                if (is_file($latest)) {
+                    return response()->file($latest, [
+                        'Content-Type' => 'image/jpeg',
+                        'Cache-Control' => 'no-store, max-age=0',
+                    ]);
+                }
+            }
+
             // Lock: cegah banyak request barengan spawn python bertumpuk.
             $lock = $tmp.'.lock';
             $fh = @fopen($lock, 'c');
@@ -541,6 +563,18 @@ class CamReadingController extends Controller
         return (time() - (int) filemtime($f)) <= $maxAge;
     }
 
+    /**
+     * File "frame terakhir" yang diperbarui service OCR tiap siklus
+     * (cam_ocr.py --latest-frame). Untuk pratinjau saat service jalan —
+     * tanpa membuka sesi RTSP baru.
+     */
+    private function latestFrameFile(string $station): string
+    {
+        $safe = strtoupper(preg_replace('/[^A-Z0-9]+/i', '', $station));
+
+        return storage_path('app/cam_latest_'.$safe.'.jpg');
+    }
+
     private function statusFile(string $station): string
     {
         return storage_path('app/cam_stat_'.strtoupper(preg_replace('/[^A-Z0-9]+/i', '', $station)).'.json');
@@ -661,6 +695,7 @@ class CamReadingController extends Controller
                 '--pid-file', $pidFile,
                 '--heartbeat-file', $beatFile,
                 '--status-file', $statFile,
+                '--latest-frame', storage_path('app/cam_latest_'.$safe.'.jpg'),
                 '--log-file', $logFile]
         );
 

@@ -118,7 +118,7 @@
                     Kamera sempat tidak merespons (<span x-text="failCount"></span>x) — cek kamera nyala &amp; satu WiFi/LAN. Mencoba lagi otomatis…
                 </div>
                 <div x-show="!failed && loaded && !isStream && frameAge !== null && frameAge > 6" class="px-4 py-1.5 text-[11px] font-bold text-amber-300 bg-amber-950/60">
-                    Gambar tidak update (frame terakhir <span x-text="frameAge"></span> dtk lalu) — koneksi kamera macet: cek HP sleep / IP berubah / aplikasi tertutup.
+                    Gambar tidak update (frame terakhir <span x-text="frameAge"></span> dtk lalu) — koneksi kamera macet: cek kamera nyala / satu jaringan / RTSP (EZVIZ: LAP Live View) aktif.
                 </div>
             </div>
             <div x-show="failed" class="p-6 text-center text-sm">
